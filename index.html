@@ -8,6 +8,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100%; overflow: hidden; }
@@ -20,14 +21,17 @@
     body { font-family: 'DM Sans', sans-serif; background: #eef1f8; color: #1a2340; }
     @keyframes fadeUp { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
     @keyframes slideDown { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:translateY(0); } }
+    @keyframes spin { from { transform:rotate(0deg); } to { transform:rotate(360deg); } }
+    .three-canvas { display:block; width:100% !important; height:100% !important; cursor:grab; border-radius:12px; }
+    .three-canvas:active { cursor:grabbing; }
   </style>
 </head>
 <body>
 <div id="root"></div>
 <script type="text/babel">
-  const { useState, useMemo } = React;
+  const { useState, useMemo, useRef, useEffect, useCallback } = React;
 
-  // SHIPPING CONSTRAINTS
+  // ─── SHIPPING CONSTRAINTS ────────────────────────────────────────────────────
   const CONSTRAINTS = {
     MAX_HEIGHT:        65,
     WARN_HEIGHT:       60,
@@ -48,26 +52,25 @@
     { id:"standard", label:"Standard Pallet", height:4 },
   ];
 
-  // UPDATED SKU DATA - confirmed carton dims
   const SKU_DATA = [
-    { id:1, item:"Vinyl Q-Top",    size:"24x4",     L:32,    W:8,     H:8.25, weight:45.9, cpp:30 },
-    { id:2, item:"Vinyl Q-Top",    size:"24x6",     L:32,    W:9.25,  H:7.25, weight:52.8, cpp:30 },
-    { id:3, item:"Vinyl Q-Top",    size:"24x8",     L:32,    W:10.25, H:6,    weight:50.8, cpp:30 },
-    { id:4, item:"Vinyl Q-Top",    size:"30x4",     L:38,    W:8,     H:9,    weight:62, cpp:30 },
-    { id:5, item:"Vinyl Q-Top",    size:"30x6",     L:38,    W:9,     H:6.75, weight:64, cpp:30 },
-    { id:6, item:"Vinyl Q-Top",    size:"30x8",     L:38,    W:11,    H:6,    weight:65, cpp:30 },
-    { id:7, item:"Fabric D-Skirt", size:"30in Skirt", L:33.25, W:18.25, H:9.5, weight:52.1, cpp:12 },
-    { id:8, item:"Fabric D-Skirt", size:"40in Skirt", L:43.25, W:18.25, H:9.5, weight:68.6, cpp:12 },
-    { id:9, item:"D-Pails",        size:"Pails",    L:20,    W:16.5,  H:21.5, weight:47.3, cpp:12 },
+    { id:1, item:"Vinyl Q-Top",    size:"24x4",       L:32,    W:8,     H:8.25, weight:45.9, cpp:30 },
+    { id:2, item:"Vinyl Q-Top",    size:"24x6",       L:32,    W:9.25,  H:7.25, weight:52.8, cpp:30 },
+    { id:3, item:"Vinyl Q-Top",    size:"24x8",       L:32,    W:10.25, H:6,    weight:50.8, cpp:30 },
+    { id:4, item:"Vinyl Q-Top",    size:"30x4",       L:38,    W:8,     H:9,    weight:62,   cpp:30 },
+    { id:5, item:"Vinyl Q-Top",    size:"30x6",       L:38,    W:9,     H:6.75, weight:64,   cpp:30 },
+    { id:6, item:"Vinyl Q-Top",    size:"30x8",       L:38,    W:11,    H:6,    weight:65,   cpp:30 },
+    { id:7, item:"Fabric D-Skirt", size:"30in Skirt", L:33.25, W:18.25, H:9.5,  weight:52.1, cpp:12 },
+    { id:8, item:"Fabric D-Skirt", size:"40in Skirt", L:43.25, W:18.25, H:9.5,  weight:68.6, cpp:12 },
+    { id:9, item:"D-Pails",        size:"Pails",      L:20,    W:16.5,  H:21.5, weight:47.3, cpp:12 },
   ];
 
   const ACCENT = {
-    "Vinyl Q-Top":    { primary:"#1782f5", light:"#e8f2ff", mid:"#b8d8ff" },
-    "Fabric D-Skirt": { primary:"#7c4dbd", light:"#f0ebff", mid:"#cdb8f0" },
-    "D-Pails":        { primary:"#e07b0a", light:"#fff4e5", mid:"#fcd49a" },
+    "Vinyl Q-Top":    { primary:"#1782f5", light:"#e8f2ff", mid:"#b8d8ff", hex3d:0x1782f5 },
+    "Fabric D-Skirt": { primary:"#7c4dbd", light:"#f0ebff", mid:"#cdb8f0", hex3d:0x7c4dbd },
+    "D-Pails":        { primary:"#e07b0a", light:"#fff4e5", mid:"#fcd49a", hex3d:0xe07b0a },
   };
 
-  // PATTERN ENGINE
+  // ─── PATTERN ENGINE ──────────────────────────────────────────────────────────
   function generatePatterns(sku) {
     const patterns = [];
     const seenFp = new Set();
@@ -90,22 +93,16 @@
     }
 
     if (sku.item === "Vinyl Q-Top") {
-      // Confirmed physical layout: 4 vertical + 1 horizontal tucked
       const tucked = [];
       for (let i = 0; i < 4; i++) tucked.push({ x:0, y:i*sku.W, w:sku.L, h:sku.W });
       tucked.push({ x:sku.L, y:0, w:sku.W, h:sku.L, tucked:true });
       addPattern("4V + 1H Tucked", tucked, "confirmed", true);
-
-      // 4 vertical only
       const v4 = [];
       for (let i = 0; i < 4; i++) v4.push({ x:0, y:i*sku.W, w:sku.L, h:sku.W });
       addPattern("4 Vertical", v4, "4v", true);
-
-      // Grid variants
       for (let rot = 0; rot < 2; rot++) {
-        const cw = rot ? sku.W : sku.L;
-        const ch = rot ? sku.L : sku.W;
-        for (let cols = 1; cols <= Math.ceil(PL/cw)+1; cols++) {
+        const cw = rot ? sku.W : sku.L, ch = rot ? sku.L : sku.W;
+        for (let cols = 1; cols <= Math.ceil(PL/cw)+1; cols++)
           for (let rows = 1; rows <= Math.ceil(PW/ch)+1; rows++) {
             const rects = [];
             for (let c = 0; c < cols; c++)
@@ -113,13 +110,11 @@
                 rects.push({ x:c*cw, y:r*ch, w:cw, h:ch });
             addPattern(cols+"x"+rows+(rot?" rot":""), rects, "g"+cols+"x"+rows+(rot?"r":""), false);
           }
-        }
       }
     } else {
       for (let rot = 0; rot < 2; rot++) {
-        const cw = rot ? sku.W : sku.L;
-        const ch = rot ? sku.L : sku.W;
-        for (let cols = 1; cols <= Math.ceil(PL/cw)+1; cols++) {
+        const cw = rot ? sku.W : sku.L, ch = rot ? sku.L : sku.W;
+        for (let cols = 1; cols <= Math.ceil(PL/cw)+1; cols++)
           for (let rows = 1; rows <= Math.ceil(PW/ch)+1; rows++) {
             const rects = [];
             for (let c = 0; c < cols; c++)
@@ -127,75 +122,55 @@
                 rects.push({ x:c*cw, y:r*ch, w:cw, h:ch });
             addPattern(cols+"x"+rows+(rot?" rot":""), rects, "g"+cols+"x"+rows+(rot?"r":""), false);
           }
-        }
       }
     }
 
-    patterns.sort((a, b) => {
-      if (a.id === "confirmed") return -1;
-      if (b.id === "confirmed") return 1;
+    patterns.sort((a,b) => {
+      if (a.id==="confirmed") return -1;
+      if (b.id==="confirmed") return 1;
       if (b.cpl !== a.cpl) return b.cpl - a.cpl;
       return (a.ohL + a.ohW) - (b.ohL + b.ohW);
     });
-
     return patterns;
   }
 
-  // MIXED LAYER BUILDER
-  // Each layer = { slots: [{sku, pattern, rects, cartonsThisSlot}], layerH }
-  // SKUs sorted heaviest layer-weight first (heaviest to bottom).
-  // Dominant SKU fills its full pattern. Secondary/tertiary SKUs fill remaining space.
-  // Max 3 SKUs per layer.
-
+  // ─── MIXED LAYER BUILDER ─────────────────────────────────────────────────────
   function getFreeRects(usedRects) {
-    // After placing dominant SKU rects, find largest free rectangular regions
-    // Returns array of {x, y, w, h} free zones on the 48x40 pallet
-    // Strategy: find the bounding box of used rects, offer the two L-shaped gaps
     if (!usedRects.length) return [{ x:0, y:0, w:PL, h:PW }];
     const maxX = Math.max(...usedRects.map(r => r.x + r.w));
     const maxY = Math.max(...usedRects.map(r => r.y + r.h));
     const minX = Math.min(...usedRects.map(r => r.x));
     const minY = Math.min(...usedRects.map(r => r.y));
     const freeRects = [];
-    // Right gap (along length)
     if (maxX < PL) freeRects.push({ x:maxX, y:0, w:PL-maxX, h:PW });
-    // Bottom gap (along width)
     if (maxY < PW) freeRects.push({ x:0, y:maxY, w:PL, h:PW-maxY });
-    // Left gap
     if (minX > 0) freeRects.push({ x:0, y:0, w:minX, h:PW });
-    // Top gap
     if (minY > 0) freeRects.push({ x:0, y:0, w:PL, h:minY });
     return freeRects;
   }
 
   function fitInGap(sku, gap) {
-    // Try to fit as many cartons of sku as possible in the gap rect
-    // Try both orientations, pick the one with most cartons and least overhang
     let best = null;
     for (let rot = 0; rot < 2; rot++) {
-      const cw = rot ? sku.W : sku.L;
-      const ch = rot ? sku.L : sku.W;
+      const cw = rot ? sku.W : sku.L, ch = rot ? sku.L : sku.W;
       const cols = Math.floor((gap.w + 0.01) / cw);
       const rows = Math.floor((gap.h + 0.01) / ch);
       if (cols < 1 || rows < 1) continue;
       const rects = [];
       for (let c = 0; c < cols; c++)
         for (let r = 0; r < rows; r++)
-          rects.push({ x: gap.x + c*cw, y: gap.y + r*ch, w:cw, h:ch });
+          rects.push({ x:gap.x + c*cw, y:gap.y + r*ch, w:cw, h:ch });
       if (!rects.length) continue;
       const ohL = Math.max(0, Math.max(...rects.map(r => r.x + r.w)) - PL);
       const ohW = Math.max(0, Math.max(...rects.map(r => r.y + r.h)) - PW);
-      // Respect overhang constraint
       if (ohL > CONSTRAINTS.MAX_OVERHANG || ohW > CONSTRAINTS.MAX_OVERHANG) continue;
       const score = rects.length * 1000 - (ohL + ohW);
-      if (!best || score > best.score)
-        best = { rects, ohL, ohW, score };
+      if (!best || score > best.score) best = { rects, ohL, ohW, score };
     }
     return best;
   }
 
   function buildLayers(qtys, selectedPatterns) {
-    // Build remaining counts
     const remaining = {};
     const skuList = [];
     SKU_DATA.forEach(sku => {
@@ -208,26 +183,20 @@
     });
 
     const layers = [];
-
     while (skuList.some(s => remaining[s.sku.id] > 0)) {
-      // Sort by layer weight desc (heaviest layer to bottom / first)
       const active = skuList.filter(s => remaining[s.sku.id] > 0);
-      active.sort((a, b) => {
+      active.sort((a,b) => {
         const wA = Math.min(remaining[a.sku.id], a.cpl) * a.sku.weight;
         const wB = Math.min(remaining[b.sku.id], b.cpl) * b.sku.weight;
         return wB - wA;
       });
-
       const layerSlots = [];
       let usedRects = [];
       let skusOnLayer = 0;
-
       for (let si = 0; si < active.length && skusOnLayer < 3; si++) {
         const { sku, pattern, cpl } = active[si];
         if (remaining[sku.id] <= 0) continue;
-
         if (skusOnLayer === 0) {
-          // Dominant SKU: use its full pattern
           const cartonsThisSlot = Math.min(remaining[sku.id], cpl);
           const rects = pattern ? pattern.rects.slice(0, cartonsThisSlot) : [];
           layerSlots.push({ sku, pattern, rects, cartonsThisSlot });
@@ -235,16 +204,11 @@
           remaining[sku.id] -= cartonsThisSlot;
           skusOnLayer++;
         } else {
-          // Secondary/tertiary: fit into free space
           const freeRects = getFreeRects(usedRects);
           let bestFit = null;
-          let bestGap = null;
           freeRects.forEach(gap => {
             const fit = fitInGap(sku, gap);
-            if (fit && (!bestFit || fit.score > bestFit.score)) {
-              bestFit = fit;
-              bestGap = gap;
-            }
+            if (fit && (!bestFit || fit.score > bestFit.score)) bestFit = fit;
           });
           if (bestFit && bestFit.rects.length > 0) {
             const cartonsThisSlot = Math.min(remaining[sku.id], bestFit.rects.length);
@@ -256,18 +220,14 @@
           }
         }
       }
-
-      if (!layerSlots.length) break; // safety
-
+      if (!layerSlots.length) break;
       const layerH = Math.max(...layerSlots.map(s => s.sku.H));
       layers.push({ slots: layerSlots, layerH });
     }
-
     return layers;
   }
 
   function getRectsForLayer(layer) {
-    // Returns array of {rect, sku} for all slots in the layer
     const out = [];
     layer.slots.forEach(slot => {
       slot.rects.forEach(r => out.push({ rect:r, sku:slot.sku }));
@@ -275,13 +235,12 @@
     return out;
   }
 
-  // CALCULATE
+  // ─── CALCULATE ───────────────────────────────────────────────────────────────
   function calculate(qtys, palletType, selectedPatterns) {
-    let totalFraction=0, cargoWeight=0, totalCartons=0, maxStackH=0;
+    let totalFraction=0, cargoWeight=0, totalCartons=0;
     let effectiveL=PL, effectiveW=PW;
     const overhangItems = [];
 
-    // Weight/fraction/carton counts per SKU
     SKU_DATA.forEach(sku => {
       const qty = qtys[sku.id] || 0;
       if (!qty) return;
@@ -290,8 +249,8 @@
       totalCartons  += qty;
     });
 
-    // Build actual mixed layers to get real stack height and footprint
     const builtLayers = buildLayers(qtys, selectedPatterns);
+    let maxStackH = 0;
     builtLayers.forEach(layer => {
       maxStackH += layer.layerH;
       layer.slots.forEach(slot => {
@@ -323,34 +282,554 @@
     };
   }
 
-  // WARNINGS
   function getWarnings(res, layers) {
     const w = [];
     if (res.totalH > CONSTRAINTS.MAX_HEIGHT)
-      w.push({ level:"error", msg:"Height " + res.totalH + '" exceeds the ' + CONSTRAINTS.MAX_HEIGHT + '" carrier limit. Reduce layers or split the pallet.' });
+      w.push({ level:"error", msg:"Height " + res.totalH + '" exceeds the ' + CONSTRAINTS.MAX_HEIGHT + '" carrier limit.' });
     else if (res.totalH > CONSTRAINTS.WARN_HEIGHT)
       w.push({ level:"warn", msg:"Height " + res.totalH + '" is approaching the ' + CONSTRAINTS.MAX_HEIGHT + '" limit.' });
-
     if (res.grossWeight > CONSTRAINTS.MAX_GROSS_WEIGHT)
       w.push({ level:"error", msg:"Gross weight " + res.grossWeight.toLocaleString() + " lb exceeds the " + CONSTRAINTS.MAX_GROSS_WEIGHT.toLocaleString() + " lb LTL limit." });
     else if (res.grossWeight > CONSTRAINTS.WARN_GROSS_WEIGHT)
       w.push({ level:"warn", msg:"Gross weight " + res.grossWeight.toLocaleString() + " lb is approaching the " + CONSTRAINTS.MAX_GROSS_WEIGHT.toLocaleString() + " lb LTL limit." });
-
     res.overhangItems.forEach(function(oi) {
       const parts = [];
       if (oi.pattern.ohL > 0) parts.push(oi.pattern.ohL + '" on length');
       if (oi.pattern.ohW > 0) parts.push(oi.pattern.ohW.toFixed(1) + '" on width');
       w.push({ level:"info", msg:oi.sku.item + " " + oi.sku.size + " (" + oi.pattern.label + "): overhangs " + parts.join(" / ") });
     });
-
-    const maxL = layers.length;
-    if (maxL > CONSTRAINTS.MAX_LAYERS)
-      w.push({ level:"warn", msg:"Stack exceeds " + CONSTRAINTS.MAX_LAYERS + " layers. Consider splitting for stability." });
-
+    if (layers.length > CONSTRAINTS.MAX_LAYERS)
+      w.push({ level:"warn", msg:"Stack exceeds " + CONSTRAINTS.MAX_LAYERS + " layers. Consider splitting." });
     return w;
   }
 
-  // MINI DIAGRAM
+  // ─── THREE.JS 3D RENDERER ────────────────────────────────────────────────────
+  // Scale: 1 Three.js unit = 10 inches
+  const SCALE = 0.05; // inches → three units (so 48" = 2.4 units)
+
+  function makeCartonLabel(text, color) {
+    const canvas = document.createElement("canvas");
+    canvas.width = 256; canvas.height = 128;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "rgba(0,0,0,0)";
+    ctx.fillRect(0,0,256,128);
+    ctx.fillStyle = color;
+    ctx.font = "bold 32px Arial";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, 128, 64);
+    return new THREE.CanvasTexture(canvas);
+  }
+
+  // Wood plank texture for pallet
+  function makeWoodTexture() {
+    const canvas = document.createElement("canvas");
+    canvas.width = 256; canvas.height = 64;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#c9a55a";
+    ctx.fillRect(0,0,256,64);
+    // Grain lines
+    for (let i = 0; i < 20; i++) {
+      const y = Math.random() * 64;
+      const alpha = 0.05 + Math.random() * 0.1;
+      ctx.strokeStyle = `rgba(80,40,0,${alpha})`;
+      ctx.lineWidth = 0.5 + Math.random() * 1.5;
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(256, y + (Math.random()-0.5)*4);
+      ctx.stroke();
+    }
+    // Knots
+    for (let i = 0; i < 3; i++) {
+      const x = 30 + Math.random() * 196;
+      const y = 15 + Math.random() * 34;
+      const r = 3 + Math.random() * 5;
+      ctx.strokeStyle = "rgba(80,40,0,0.2)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.stroke();
+    }
+    return new THREE.CanvasTexture(canvas);
+  }
+
+  function ThreeRenderer({ layers, res, palletType, activeLayer, onLayerClick }) {
+    const mountRef = useRef(null);
+    const sceneRef = useRef(null);
+    const rendererRef = useRef(null);
+    const cameraRef = useRef(null);
+    const animRef = useRef(null);
+    const orbitRef = useRef({
+      isDragging: false, lastX: 0, lastY: 0,
+      theta: -0.5, phi: 0.55, radius: 6,
+      targetTheta: -0.5, targetPhi: 0.55,
+    });
+    const [autoRotate, setAutoRotate] = useState(false);
+    const [isLoaded, setIsLoaded] = useState(false);
+    const autoRotateRef = useRef(false);
+    const cartonMeshesRef = useRef([]);
+
+    // Sync autoRotate ref
+    useEffect(() => { autoRotateRef.current = autoRotate; }, [autoRotate]);
+
+    // Init Three.js scene once
+    useEffect(() => {
+      const mount = mountRef.current;
+      if (!mount) return;
+
+      const W = mount.clientWidth, H = mount.clientHeight;
+
+      // Scene
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x1a2340);
+      scene.fog = new THREE.FogExp2(0x1a2340, 0.07);
+      sceneRef.current = scene;
+
+      // Camera
+      const camera = new THREE.PerspectiveCamera(45, W/H, 0.01, 100);
+      camera.position.set(4, 4, 5);
+      camera.lookAt(1.2, 1, 1.0);
+      cameraRef.current = camera;
+
+      // Renderer
+      const renderer = new THREE.WebGLRenderer({ antialias:true, alpha:false, preserveDrawingBuffer:true });
+      renderer.setSize(W, H);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      renderer.outputEncoding = THREE.sRGBEncoding;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.2;
+      renderer.domElement.className = "three-canvas";
+      mount.appendChild(renderer.domElement);
+      rendererRef.current = renderer;
+
+      // Lights
+      const ambient = new THREE.AmbientLight(0xffffff, 0.4);
+      scene.add(ambient);
+
+      const dirLight = new THREE.DirectionalLight(0xfff5e0, 1.4);
+      dirLight.position.set(5, 10, 5);
+      dirLight.castShadow = true;
+      dirLight.shadow.mapSize.width = 2048;
+      dirLight.shadow.mapSize.height = 2048;
+      dirLight.shadow.camera.near = 0.1;
+      dirLight.shadow.camera.far = 30;
+      dirLight.shadow.camera.left = -5;
+      dirLight.shadow.camera.right = 5;
+      dirLight.shadow.camera.top = 5;
+      dirLight.shadow.camera.bottom = -5;
+      dirLight.shadow.bias = -0.001;
+      scene.add(dirLight);
+
+      const fillLight = new THREE.DirectionalLight(0x4488ff, 0.3);
+      fillLight.position.set(-3, 2, -3);
+      scene.add(fillLight);
+
+      const rimLight = new THREE.DirectionalLight(0xffffff, 0.2);
+      rimLight.position.set(0, -2, 5);
+      scene.add(rimLight);
+
+      // Ground reflection plane
+      const groundGeo = new THREE.PlaneGeometry(20, 20);
+      const groundMat = new THREE.MeshStandardMaterial({
+        color: 0x111825,
+        roughness: 0.8,
+        metalness: 0.1,
+      });
+      const ground = new THREE.Mesh(groundGeo, groundMat);
+      ground.rotation.x = -Math.PI / 2;
+      ground.position.y = -0.02;
+      ground.receiveShadow = true;
+      scene.add(ground);
+
+      // Grid lines on ground
+      const gridHelper = new THREE.GridHelper(12, 24, 0x243050, 0x1e2d46);
+      gridHelper.position.y = -0.015;
+      scene.add(gridHelper);
+
+      setIsLoaded(true);
+
+      // Resize handler
+      const onResize = () => {
+        const W2 = mount.clientWidth, H2 = mount.clientHeight;
+        camera.aspect = W2 / H2;
+        camera.updateProjectionMatrix();
+        renderer.setSize(W2, H2);
+      };
+      window.addEventListener("resize", onResize);
+
+      // Orbit controls - mouse
+      const onMouseDown = (e) => {
+        orbitRef.current.isDragging = true;
+        orbitRef.current.lastX = e.clientX;
+        orbitRef.current.lastY = e.clientY;
+      };
+      const onMouseMove = (e) => {
+        if (!orbitRef.current.isDragging) return;
+        const dx = e.clientX - orbitRef.current.lastX;
+        const dy = e.clientY - orbitRef.current.lastY;
+        orbitRef.current.targetTheta += dx * 0.008;
+        orbitRef.current.targetPhi = Math.max(0.1, Math.min(1.4, orbitRef.current.targetPhi - dy * 0.006));
+        orbitRef.current.lastX = e.clientX;
+        orbitRef.current.lastY = e.clientY;
+      };
+      const onMouseUp = () => { orbitRef.current.isDragging = false; };
+      const onWheel = (e) => {
+        orbitRef.current.radius = Math.max(2, Math.min(12, orbitRef.current.radius + e.deltaY * 0.005));
+        e.preventDefault();
+      };
+
+      // Touch controls
+      const onTouchStart = (e) => {
+        if (e.touches.length === 1) {
+          orbitRef.current.isDragging = true;
+          orbitRef.current.lastX = e.touches[0].clientX;
+          orbitRef.current.lastY = e.touches[0].clientY;
+        }
+      };
+      const onTouchMove = (e) => {
+        if (!orbitRef.current.isDragging || e.touches.length !== 1) return;
+        const dx = e.touches[0].clientX - orbitRef.current.lastX;
+        const dy = e.touches[0].clientY - orbitRef.current.lastY;
+        orbitRef.current.targetTheta += dx * 0.008;
+        orbitRef.current.targetPhi = Math.max(0.1, Math.min(1.4, orbitRef.current.targetPhi - dy * 0.006));
+        orbitRef.current.lastX = e.touches[0].clientX;
+        orbitRef.current.lastY = e.touches[0].clientY;
+      };
+      const onTouchEnd = () => { orbitRef.current.isDragging = false; };
+
+      renderer.domElement.addEventListener("mousedown", onMouseDown);
+      window.addEventListener("mousemove", onMouseMove);
+      window.addEventListener("mouseup", onMouseUp);
+      renderer.domElement.addEventListener("wheel", onWheel, { passive:false });
+      renderer.domElement.addEventListener("touchstart", onTouchStart, { passive:true });
+      renderer.domElement.addEventListener("touchmove", onTouchMove, { passive:true });
+      renderer.domElement.addEventListener("touchend", onTouchEnd);
+
+      // Animate loop
+      const animate = () => {
+        animRef.current = requestAnimationFrame(animate);
+        const o = orbitRef.current;
+
+        // Smooth orbit
+        o.theta += (o.targetTheta - o.theta) * 0.08;
+        o.phi   += (o.targetPhi   - o.phi)   * 0.08;
+
+        if (autoRotateRef.current && !o.isDragging) {
+          o.targetTheta += 0.003;
+        }
+
+        const r = o.radius;
+        camera.position.x = r * Math.sin(o.theta) * Math.cos(o.phi) + 1.2;
+        camera.position.y = r * Math.sin(o.phi) + 1.0;
+        camera.position.z = r * Math.cos(o.theta) * Math.cos(o.phi) + 1.0;
+        camera.lookAt(1.2, 1.2, 1.0);
+
+        renderer.render(scene, camera);
+      };
+      animate();
+
+      return () => {
+        cancelAnimationFrame(animRef.current);
+        window.removeEventListener("resize", onResize);
+        window.removeEventListener("mousemove", onMouseMove);
+        window.removeEventListener("mouseup", onMouseUp);
+        renderer.domElement.removeEventListener("mousedown", onMouseDown);
+        renderer.domElement.removeEventListener("wheel", onWheel);
+        renderer.domElement.removeEventListener("touchstart", onTouchStart);
+        renderer.domElement.removeEventListener("touchmove", onTouchMove);
+        renderer.domElement.removeEventListener("touchend", onTouchEnd);
+        renderer.dispose();
+        if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement);
+      };
+    }, []);
+
+    // Rebuild 3D geometry when layers change
+    useEffect(() => {
+      const scene = sceneRef.current;
+      if (!scene || !isLoaded) return;
+
+      // Remove old cartons/pallet
+      const toRemove = [];
+      scene.traverse(obj => {
+        if (obj.userData && obj.userData.isPalletContent) toRemove.push(obj);
+      });
+      toRemove.forEach(obj => {
+        scene.remove(obj);
+        if (obj.geometry) obj.geometry.dispose();
+        if (obj.material) {
+          if (Array.isArray(obj.material)) obj.material.forEach(m => m.dispose());
+          else obj.material.dispose();
+        }
+      });
+      cartonMeshesRef.current = [];
+
+      if (!layers.length || !res) return;
+
+      const INCH = SCALE; // 1 inch in Three units
+      const GAP = 0.03;   // small visual gap between cartons
+
+      // === PALLET ===
+      const palletH = palletType.height * INCH;
+      const palletL = PL * INCH;
+      const palletW = PW * INCH;
+
+      const woodTex = makeWoodTexture();
+      woodTex.wrapS = THREE.RepeatWrapping;
+      woodTex.wrapT = THREE.RepeatWrapping;
+      woodTex.repeat.set(4, 1);
+
+      // Pallet deck (top board)
+      const deckGeo = new THREE.BoxGeometry(palletL, palletH * 0.35, palletW);
+      const deckMat = new THREE.MeshStandardMaterial({ map: woodTex, roughness:0.85, metalness:0 });
+      const deck = new THREE.Mesh(deckGeo, deckMat);
+      deck.position.set(palletL/2, palletH * 0.82, palletW/2);
+      deck.castShadow = true;
+      deck.receiveShadow = true;
+      deck.userData = { isPalletContent: true };
+      scene.add(deck);
+
+      // Pallet boards (3 slats across)
+      for (let i = 0; i < 3; i++) {
+        const slat = new THREE.Mesh(
+          new THREE.BoxGeometry(palletL, palletH * 0.55, palletW * 0.12),
+          new THREE.MeshStandardMaterial({ map: woodTex, roughness:0.9, metalness:0 })
+        );
+        slat.position.set(palletL/2, palletH * 0.3, palletW * (0.1 + i * 0.4));
+        slat.castShadow = true;
+        slat.receiveShadow = true;
+        slat.userData = { isPalletContent: true };
+        scene.add(slat);
+      }
+
+      // Pallet feet
+      for (let xi = 0; xi < 3; xi++) {
+        for (let zi = 0; zi < 2; zi++) {
+          const foot = new THREE.Mesh(
+            new THREE.BoxGeometry(palletL * 0.22, palletH * 0.45, palletW * 0.14),
+            new THREE.MeshStandardMaterial({ color:0xb8903a, roughness:0.9 })
+          );
+          foot.position.set(
+            palletL * (0.1 + xi * 0.4),
+            palletH * 0.22,
+            palletW * (0.1 + zi * 0.8)
+          );
+          foot.castShadow = true;
+          foot.receiveShadow = true;
+          foot.userData = { isPalletContent: true };
+          scene.add(foot);
+        }
+      }
+
+      // === CARTONS ===
+      let curY = palletH; // start at top of pallet deck
+
+      layers.forEach((layer, layerIdx) => {
+        const isActiveLayer = layerIdx === Math.min(activeLayer, layers.length-1);
+        const layerH = layer.layerH * INCH;
+
+        layer.slots.forEach(slot => {
+          const { sku } = slot;
+          const ac = ACCENT[sku.item];
+          const baseColor = ac.hex3d;
+          const isOH = slot.pattern && (slot.pattern.ohL > 0 || slot.pattern.ohW > 0);
+
+          slot.rects.forEach(r => {
+            const cL = r.w * INCH - GAP;
+            const cW = r.h * INCH - GAP;
+            const cH = sku.H * INCH - GAP;
+
+            const geo = new THREE.BoxGeometry(cL, cH, cW);
+
+            // Active layer = full brightness; others = dimmed
+            const dimFactor = isActiveLayer ? 1.0 : 0.28;
+            const col = new THREE.Color(isOH ? 0xf59e0b : baseColor);
+            col.multiplyScalar(dimFactor);
+
+            const mat = new THREE.MeshStandardMaterial({
+              color: col,
+              roughness: isActiveLayer ? 0.55 : 0.9,
+              metalness: isActiveLayer ? 0.05 : 0,
+              emissive: isActiveLayer ? new THREE.Color(isOH ? 0xf59e0b : baseColor).multiplyScalar(0.08) : new THREE.Color(0x000000),
+              transparent: !isActiveLayer,
+              opacity: isActiveLayer ? 1.0 : 0.45,
+            });
+
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.position.set(
+              r.x * INCH + cL/2 + GAP/2,
+              curY + cH/2 + GAP/2,
+              r.y * INCH + cW/2 + GAP/2
+            );
+            mesh.castShadow = isActiveLayer;
+            mesh.receiveShadow = true;
+            mesh.userData = { isPalletContent:true, layerIdx, sku };
+            scene.add(mesh);
+            cartonMeshesRef.current.push(mesh);
+
+            // Add edge lines for active layer cartons (crisp wireframe accent)
+            if (isActiveLayer) {
+              const edgesGeo = new THREE.EdgesGeometry(geo);
+              const edgeColor = new THREE.Color(isOH ? 0xfbbf24 : baseColor).multiplyScalar(1.8);
+              const edgeMat = new THREE.LineBasicMaterial({ color: edgeColor, transparent:true, opacity:0.6 });
+              const edges = new THREE.LineSegments(edgesGeo, edgeMat);
+              edges.position.copy(mesh.position);
+              edges.userData = { isPalletContent:true };
+              scene.add(edges);
+            }
+          });
+        });
+
+        curY += layerH;
+      });
+
+      // === WRAP STRAPPING LINES (decorative) ===
+      if (layers.length > 1 && res) {
+        const strapH = palletH + (res.stackH * INCH * 0.5);
+        const strapMat = new THREE.LineBasicMaterial({ color: 0x334466, linewidth: 1, transparent:true, opacity:0.5 });
+        const strapPts = [
+          new THREE.Vector3(0, strapH, palletW/2),
+          new THREE.Vector3(palletL, strapH, palletW/2),
+          new THREE.Vector3(palletL, 0, palletW/2),
+          new THREE.Vector3(0, 0, palletW/2),
+          new THREE.Vector3(0, strapH, palletW/2),
+        ];
+        const strapGeo = new THREE.BufferGeometry().setFromPoints(strapPts);
+        const strap = new THREE.Line(strapGeo, strapMat);
+        strap.userData = { isPalletContent:true };
+        scene.add(strap);
+      }
+
+      // === HEIGHT INDICATOR ===
+      if (res) {
+        const totalH3 = res.totalH * INCH;
+        const indicatorMat = new THREE.LineBasicMaterial({ color: res.totalH > 65 ? 0xef4444 : res.totalH > 60 ? 0xf59e0b : 0x1782f5, transparent:true, opacity:0.7 });
+        const indicatorPts = [
+          new THREE.Vector3(palletL + 0.15, 0, palletW/2),
+          new THREE.Vector3(palletL + 0.15, totalH3, palletW/2),
+        ];
+        const indicatorGeo = new THREE.BufferGeometry().setFromPoints(indicatorPts);
+        const indicator = new THREE.Line(indicatorGeo, indicatorMat);
+        indicator.userData = { isPalletContent:true };
+        scene.add(indicator);
+
+        // Tick marks at pallet top and stack top
+        [[0, "base"], [totalH3, "top"]].forEach(([y]) => {
+          const tickPts = [
+            new THREE.Vector3(palletL + 0.1, y, palletW/2),
+            new THREE.Vector3(palletL + 0.2, y, palletW/2),
+          ];
+          const tickGeo = new THREE.BufferGeometry().setFromPoints(tickPts);
+          const tick = new THREE.Line(tickGeo, indicatorMat);
+          tick.userData = { isPalletContent:true };
+          scene.add(tick);
+        });
+      }
+
+    }, [layers, activeLayer, palletType, isLoaded, res]);
+
+    return (
+      <div style={{ flex:1, display:"flex", flexDirection:"column", position:"relative", minHeight:0 }}>
+        {/* 3D Canvas mount */}
+        <div ref={mountRef} style={{ flex:1, minHeight:0, borderRadius:12, overflow:"hidden", position:"relative" }}>
+          {!isLoaded && (
+            <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", background:"#1a2340", borderRadius:12 }}>
+              <div style={{ textAlign:"center", color:"#4a6080" }}>
+                <div style={{ fontSize:28, animation:"spin 1s linear infinite", display:"inline-block" }}>⟳</div>
+                <div style={{ fontSize:12, marginTop:8 }}>Initializing WebGL…</div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* HUD Controls */}
+        <div style={{ position:"absolute", top:10, right:10, display:"flex", flexDirection:"column", gap:6, zIndex:10 }}>
+          <button
+            onClick={() => setAutoRotate(r => !r)}
+            title={autoRotate ? "Stop rotation" : "Auto-rotate"}
+            style={{
+              width:32, height:32, borderRadius:8, border:"1.5px solid " + (autoRotate ? "#1782f5" : "#2a3a5a"),
+              background: autoRotate ? "#1782f530" : "#12192a",
+              color: autoRotate ? "#1782f5" : "#4a6080",
+              cursor:"pointer", fontSize:14, display:"flex", alignItems:"center", justifyContent:"center",
+              transition:"all 0.15s",
+            }}
+          >↻</button>
+          <button
+            title="Reset view"
+            onClick={() => {
+              orbitRef.current.targetTheta = -0.5;
+              orbitRef.current.targetPhi = 0.55;
+              orbitRef.current.radius = 6;
+            }}
+            style={{
+              width:32, height:32, borderRadius:8, border:"1.5px solid #2a3a5a",
+              background:"#12192a", color:"#4a6080",
+              cursor:"pointer", fontSize:14, display:"flex", alignItems:"center", justifyContent:"center",
+            }}
+          >⌂</button>
+          <button
+            title="Top-down view"
+            onClick={() => {
+              orbitRef.current.targetTheta = 0;
+              orbitRef.current.targetPhi = 1.38;
+              orbitRef.current.radius = 7;
+            }}
+            style={{
+              width:32, height:32, borderRadius:8, border:"1.5px solid #2a3a5a",
+              background:"#12192a", color:"#4a6080",
+              cursor:"pointer", fontSize:10, display:"flex", alignItems:"center", justifyContent:"center",
+              fontWeight:700, fontFamily:"inherit",
+            }}
+          >T</button>
+          <button
+            title="Front view"
+            onClick={() => {
+              orbitRef.current.targetTheta = Math.PI/2;
+              orbitRef.current.targetPhi = 0.25;
+              orbitRef.current.radius = 7;
+            }}
+            style={{
+              width:32, height:32, borderRadius:8, border:"1.5px solid #2a3a5a",
+              background:"#12192a", color:"#4a6080",
+              cursor:"pointer", fontSize:10, display:"flex", alignItems:"center", justifyContent:"center",
+              fontWeight:700, fontFamily:"inherit",
+            }}
+          >F</button>
+        </div>
+
+        {/* Drag hint */}
+        {isLoaded && layers.length > 0 && (
+          <div style={{ position:"absolute", bottom:10, left:"50%", transform:"translateX(-50%)", fontSize:10, color:"#3a5070", background:"#0e1520cc", padding:"4px 10px", borderRadius:20, pointerEvents:"none", letterSpacing:"0.05em", whiteSpace:"nowrap" }}>
+            drag to orbit · scroll to zoom
+          </div>
+        )}
+
+        {/* Legend */}
+        {isLoaded && layers.length > 0 && (
+          <div style={{ position:"absolute", bottom:10, left:10, display:"flex", flexDirection:"column", gap:4, background:"#0e1520cc", padding:"8px 10px", borderRadius:8, backdropFilter:"blur(4px)" }}>
+            {Object.entries(ACCENT).map(([item, ac]) => {
+              const hasSku = layers.some(l => l.slots.some(s => s.sku.item === item));
+              if (!hasSku) return null;
+              return (
+                <div key={item} style={{ display:"flex", alignItems:"center", gap:6 }}>
+                  <div style={{ width:10, height:10, borderRadius:2, background:ac.primary, flexShrink:0 }} />
+                  <span style={{ fontSize:9, color:"#7090b0", fontWeight:500 }}>{item}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Empty state */}
+        {isLoaded && !layers.length && (
+          <div style={{ position:"absolute", inset:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", pointerEvents:"none" }}>
+            <div style={{ fontSize:48, opacity:0.08 }}>▣</div>
+            <div style={{ fontSize:12, color:"#3a5070", marginTop:12, textAlign:"center", lineHeight:1.8 }}>Enter quantities<br/>to see your 3D pallet</div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ─── MINI DIAGRAM ────────────────────────────────────────────────────────────
   function MiniDiagram({ pattern, sku, size }) {
     const ac = ACCENT[sku.item];
     const maxX = Math.max(PL, ...pattern.rects.map(r => r.x + r.w));
@@ -380,7 +859,7 @@
     );
   }
 
-  // PATTERN SELECTOR
+  // ─── PATTERN SELECTOR ────────────────────────────────────────────────────────
   function PatternSelector({ sku, selectedPatternId, onSelect, showOverhang }) {
     const ac = ACCENT[sku.item];
     const all = useMemo(() => generatePatterns(sku), [sku.id]);
@@ -388,7 +867,7 @@
 
     if (!visible.length) return (
       <div style={{ padding:"10px 14px", background:"#f8f9fd", borderTop:"1px solid " + ac.mid, fontSize:11, color:"#8fa0bc", fontStyle:"italic", animation:"slideDown 0.2s ease" }}>
-        No aligned patterns available for this SKU. Switch to Overhang mode to see options.
+        No aligned patterns available. Switch to Overhang mode to see options.
       </div>
     );
 
@@ -426,7 +905,7 @@
     );
   }
 
-  // SIDE ELEVATION
+  // ─── SIDE ELEVATION ──────────────────────────────────────────────────────────
   function SideElevation({ layers, activeLayer, res, palletType, onLayerClick }) {
     const W = 220, H = 110;
     const scX = (W - 44) / PL;
@@ -485,7 +964,7 @@
     return <div style={{ position:"relative", width:W, height:H }}>{items}</div>;
   }
 
-  // WARNING BANNER
+  // ─── WARNING BANNER ──────────────────────────────────────────────────────────
   function WarningBanner({ warnings }) {
     if (!warnings.length) return null;
     const colors = {
@@ -508,8 +987,8 @@
     );
   }
 
-  // MAIN VISUALIZER
-  function PalletVisualizer({ layers, activeLayer, onLayerClick, res, palletType }) {
+  // ─── 2D PALLET VISUALIZER ────────────────────────────────────────────────────
+  function PalletVisualizer2D({ layers, activeLayer, onLayerClick, res, palletType }) {
     if (!res || !layers.length) return (
       <div style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:14 }}>
         <div style={{ fontSize:60, opacity:0.1 }}>&#128666;</div>
@@ -520,7 +999,6 @@
     const cl = Math.min(activeLayer, layers.length - 1);
     const layer = layers[cl];
     const rects = getRectsForLayer(layer);
-    // For legend/label purposes use dominant (first) slot's SKU
     const sku = layer.slots[0].sku;
     const ac = ACCENT[sku.item];
 
@@ -539,7 +1017,6 @@
           <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
             {layers.map((l, i) => {
               const isActive = i === cl;
-              // Mixed layer: show color of dominant (first) SKU, list all sizes
               const domSlot = l.slots[0];
               const lac = ACCENT[domSlot.sku.item];
               const label = l.slots.map(s => s.sku.size).join(" + ");
@@ -600,18 +1077,6 @@
             {res.effectiveL > PL && <div style={{ position:"absolute", left:ox+pW, top:oy+pH+5, fontSize:9, color:"#f5a623", fontWeight:600 }}>+{(res.effectiveL-PL).toFixed(1)}"</div>}
             {res.effectiveW > PW && <div style={{ position:"absolute", left:ox, top:oy+pH+16, fontSize:9, color:"#f5a623", fontWeight:600 }}>+{(res.effectiveW-PW).toFixed(1)}" W</div>}
           </div>
-          {layer.slots.some(s => s.sku.item === "Vinyl Q-Top" && s.rects.some(r => r.tucked)) && (
-            <div style={{ marginTop:7, display:"flex", gap:12 }}>
-              <div style={{ display:"flex", alignItems:"center", gap:5 }}>
-                <div style={{ width:12, height:9, background:ac.light, border:"1.5px solid " + ac.primary, borderRadius:1 }} />
-                <span style={{ fontSize:9, color:"#5a6a88" }}>Vertical</span>
-              </div>
-              <div style={{ display:"flex", alignItems:"center", gap:5 }}>
-                <div style={{ width:9, height:12, background:ac.primary + "22", border:"1.5px dashed " + ac.primary, borderRadius:1 }} />
-                <span style={{ fontSize:9, color:"#5a6a88" }}>Horizontal (tucked)</span>
-              </div>
-            </div>
-          )}
         </div>
 
         <div>
@@ -622,277 +1087,10 @@
     );
   }
 
-  // APP
-  const grouped = SKU_DATA.reduce((acc, s) => { (acc[s.item] = acc[s.item] || []).push(s); return acc; }, {});
-
-  function App() {
-    const [qtys, setQtys]                         = useState({});
-    const [palletType, setPalletType]             = useState(PALLET_TYPES[0]);
-    const [step, setStep]                         = useState(0);
-    const [activeLayer, setActiveLayer]           = useState(0);
-    const [showOverhang, setShowOverhang]         = useState(true);
-    const [selectedPatterns, setSelectedPatterns] = useState({});
-
-    const setQty = (id, v) => {
-      const val = Math.max(0, parseInt(v) || 0);
-      setQtys(p => ({ ...p, [id]: val }));
-      if (val > 0 && !selectedPatterns[id]) {
-        const patterns = generatePatterns(SKU_DATA.find(s => s.id === id));
-        if (patterns.length) setSelectedPatterns(p => ({ ...p, [id]: patterns[0].id }));
-      }
-    };
-
-    const selectPattern = (skuId, patternId) => {
-      setSelectedPatterns(p => ({ ...p, [skuId]: patternId }));
-      setActiveLayer(0);
-    };
-
-    const totalCartons = SKU_DATA.reduce((s, sk) => s + (qtys[sk.id] || 0), 0);
-    const layers   = totalCartons > 0 ? buildLayers(qtys, selectedPatterns) : [];
-    const res      = totalCartons > 0 ? calculate(qtys, palletType, selectedPatterns) : null;
-    const warnings = res ? getWarnings(res, layers) : [];
-    const hasErrors = warnings.some(w => w.level === "error");
-    const steps = ["Pallet Type", "SKU Quantities"];
-
-    return (
-      <div style={{ display:"flex", height:"100vh", background:"#eef1f8", fontFamily:"'DM Sans',sans-serif" }}>
-
-        <div style={{ width:490, display:"flex", flexDirection:"column", background:"#fff", boxShadow:"2px 0 20px #1a23400e", zIndex:2, overflow:"hidden" }}>
-
-          <div style={{ padding:"18px 24px", borderBottom:"1px solid #eef1f8", display:"flex", alignItems:"center", gap:12 }}>
-            <div style={{ width:34, height:34, background:"linear-gradient(135deg,#1782f5,#0d5fc9)", borderRadius:10, display:"flex", alignItems:"center", justifyContent:"center", fontSize:16, boxShadow:"0 4px 12px #1782f540" }}>&#128666;</div>
-            <div>
-              <div style={{ fontSize:14, fontWeight:700, color:"#1a2340", fontFamily:"'Space Grotesk',sans-serif" }}>SMT Pallet Calculator</div>
-              <div style={{ fontSize:10, color:"#8fa0bc", marginTop:1 }}>Mixed SKU - Pallet Optimizer</div>
-            </div>
-            <div style={{ marginLeft:"auto", display:"flex", gap:8, alignItems:"center" }}>
-              <PrintButton qtys={qtys} res={res} layers={layers} selectedPatterns={selectedPatterns} palletType={palletType} />
-              {totalCartons > 0 && (
-                <button onClick={() => { setQtys({}); setSelectedPatterns({}); setActiveLayer(0); }} style={{ background:"none", border:"1.5px solid #e0e5f0", color:"#8fa0bc", padding:"4px 11px", borderRadius:6, cursor:"pointer", fontSize:11, fontFamily:"inherit", fontWeight:500 }}>Reset</button>
-              )}
-            </div>
-          </div>
-
-          <div style={{ display:"flex", padding:"0 24px", borderBottom:"1px solid #eef1f8" }}>
-            {steps.map((s, i) => (
-              <button key={i} onClick={() => setStep(i)} style={{
-                padding:"12px 0", marginRight:20, background:"none", border:"none",
-                fontSize:12, fontWeight:step===i ? 600 : 400, color:step===i ? "#1782f5" : "#8fa0bc",
-                cursor:"pointer", fontFamily:"inherit",
-                borderBottom:step===i ? "2px solid #1782f5" : "2px solid transparent", transition:"all 0.15s",
-              }}>
-                <span style={{ display:"inline-flex", alignItems:"center", gap:6 }}>
-                  <span style={{ width:16, height:16, borderRadius:"50%", background:step===i ? "#1782f5" : "#e4e8f4", color:step===i ? "#fff" : "#8fa0bc", fontSize:9, display:"inline-flex", alignItems:"center", justifyContent:"center", fontWeight:700 }}>{i+1}</span>
-                  {s}
-                </span>
-              </button>
-            ))}
-          </div>
-
-          <div style={{ flex:1, overflowY:"auto", padding:"20px 24px" }}>
-
-            {step === 0 && (
-              <div style={{ animation:"fadeUp 0.2s ease" }}>
-                <div style={{ fontSize:13, color:"#3a4a6b", lineHeight:1.7, marginBottom:20 }}>
-                  Select the type of pallet for this shipment.
-                </div>
-                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
-                  {PALLET_TYPES.map(pt => {
-                    const active = palletType.id === pt.id;
-                    return (
-                      <button key={pt.id} onClick={() => setPalletType(pt)} style={{
-                        background: active ? "#e8f2ff" : "#f8f9fc",
-                        border:"2px solid " + (active ? "#1782f5" : "#e0e5f0"),
-                        borderRadius:12, padding:"16px 14px", cursor:"pointer",
-                        textAlign:"left", fontFamily:"inherit", transition:"all 0.2s",
-                        boxShadow: active ? "0 4px 16px #1782f520" : "none",
-                      }}>
-                        <div style={{ fontSize:13, fontWeight:700, color:active ? "#1782f5" : "#1a2340", marginBottom:4, fontFamily:"'Space Grotesk',sans-serif" }}>{pt.label}</div>
-                        <div style={{ fontSize:11, color:active ? "#1782f5" : "#8fa0bc" }}>{pt.height}" deck height</div>
-                        {active && <div style={{ marginTop:7, display:"inline-block", background:"#1782f5", color:"#fff", fontSize:9, padding:"2px 7px", borderRadius:10, letterSpacing:"0.06em", fontWeight:600 }}>SELECTED</div>}
-                      </button>
-                    );
-                  })}
-                </div>
-                <div style={{ marginTop:24, padding:"14px 16px", background:"#f8f9fd", border:"1px solid #e8edf6", borderRadius:10 }}>
-                  <div style={{ fontSize:10, fontWeight:700, color:"#8fa0bc", letterSpacing:"0.1em", marginBottom:10 }}>ACTIVE SHIPPING CONSTRAINTS</div>
-                  {[
-                    ["Max height",         CONSTRAINTS.MAX_HEIGHT + '" (' + CONSTRAINTS.WARN_HEIGHT + '" soft warning)'],
-                    ["Max overhang",       CONSTRAINTS.MAX_OVERHANG + '" per side (LTL standard)'],
-                    ["Max gross weight",   CONSTRAINTS.MAX_GROSS_WEIGHT.toLocaleString() + " lb per pallet"],
-                    ["Min cartons/layer",  CONSTRAINTS.MIN_CPL + " (patterns below this are hidden)"],
-                    ["Min pallet coverage", Math.round(CONSTRAINTS.MIN_COVERAGE*100) + "% of footprint"],
-                    ["Layer stability flag", CONSTRAINTS.MAX_LAYERS + " layers"],
-                  ].map(([k, v]) => (
-                    <div key={k} style={{ display:"flex", justifyContent:"space-between", fontSize:11, marginBottom:5 }}>
-                      <span style={{ color:"#5a6a88" }}>{k}</span>
-                      <span style={{ color:"#1a2340", fontWeight:600 }}>{v}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {step === 1 && (
-              <div style={{ animation:"fadeUp 0.2s ease" }}>
-                <div style={{ fontSize:13, color:"#3a4a6b", lineHeight:1.7, marginBottom:14 }}>
-                  Enter carton quantities. Select a layer pattern - the visualizer updates instantly.
-                </div>
-
-                <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:20, padding:"9px 13px", background:"#f8f9fd", borderRadius:10, border:"1px solid #e8edf6" }}>
-                  <span style={{ fontSize:11, color:"#5a6a88", fontWeight:600 }}>Layer Pattern:</span>
-                  <div style={{ display:"flex", borderRadius:20, overflow:"hidden", border:"1.5px solid #e0e5f0", background:"#fff" }}>
-                    {[{id:true, label:"Overhang"}, {id:false, label:"Aligned"}].map(opt => (
-                      <button key={opt.label} onClick={() => setShowOverhang(opt.id)} style={{
-                        padding:"5px 15px", border:"none", cursor:"pointer", fontSize:11, fontFamily:"inherit",
-                        fontWeight:showOverhang === opt.id ? 600 : 400,
-                        background:showOverhang === opt.id ? "#1782f5" : "transparent",
-                        color:showOverhang === opt.id ? "#fff" : "#8fa0bc",
-                        transition:"all 0.15s",
-                      }}>{opt.label}</button>
-                    ))}
-                  </div>
-                  <span style={{ fontSize:10, color:"#8fa0bc" }}>{showOverhang ? "Max " + CONSTRAINTS.MAX_OVERHANG + '" per side' : "Zero-overhang only"}</span>
-                </div>
-
-                {Object.entries(grouped).map(([item, skus]) => {
-                  const ac = ACCENT[item];
-                  return (
-                    <div key={item} style={{ marginBottom:22 }}>
-                      <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:9 }}>
-                        <div style={{ width:7, height:7, borderRadius:2, background:ac.primary }} />
-                        <span style={{ fontSize:11, color:ac.primary, fontWeight:700, letterSpacing:"0.1em" }}>{item.toUpperCase()}</span>
-                      </div>
-                      <div style={{ borderRadius:10, border:"1px solid " + ac.mid, overflow:"hidden" }}>
-                        {skus.map((sku, i) => {
-                          const qty = qtys[sku.id] || 0;
-                          const active = qty > 0;
-                          const all = generatePatterns(sku);
-                          const selId = selectedPatterns[sku.id] || (all[0] && all[0].id);
-                          const selP = all.find(p => p.id === selId);
-                          return (
-                            <div key={sku.id}>
-                              <div style={{
-                                display:"grid", gridTemplateColumns:"1fr 32px 58px 32px",
-                                alignItems:"center", gap:7, padding:"10px 13px",
-                                background: active ? ac.light : "#fff",
-                                borderTop: i > 0 ? "1px solid " + (active ? ac.mid : "#f0f2f8") : "none",
-                                transition:"background 0.2s",
-                              }}>
-                                <div>
-                                  <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
-                                    <span style={{ fontSize:13, fontWeight:active ? 600 : 400, color:active ? "#1a2340" : "#5a6a88" }}>{sku.size}</span>
-                                    {active && selP && (
-                                      <span style={{ fontSize:9, color:selP.aligned ? "#1a9e6a" : "#d4820a", fontWeight:600, background:selP.aligned ? "#e6f9f2" : "#fff4e5", padding:"1px 5px", borderRadius:8, border:"1px solid " + (selP.aligned ? "#a8e8cd" : "#fcd49a") }}>
-                                        {selP.aligned ? "aligned" : ("+" + (selP.ohL > 0 ? selP.ohL + '"L' : "") + (selP.ohW > 0 ? " " + selP.ohW.toFixed(1) + '"W' : ""))}
-                                      </span>
-                                    )}
-                                  </div>
-                                  <div style={{ fontSize:10, color:"#8fa0bc", marginTop:2 }}>{sku.L}x{sku.W}x{sku.H}" - {sku.weight} lb - max {sku.cpp}/plt</div>
-                                  {active && selP && <div style={{ fontSize:10, color:ac.primary, marginTop:1 }}>{selP.cpl}/layer - {selP.label}</div>}
-                                </div>
-                                <button onClick={() => setQty(sku.id, qty-1)} style={{ width:29, height:29, borderRadius:7, background:"#f0f2f8", border:"1.5px solid #e0e5f0", color:"#5a6a88", cursor:"pointer", fontSize:17, display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"inherit" }}>-</button>
-                                <input type="number" min={0} value={qty || ""} placeholder="0"
-                                  onChange={e => setQty(sku.id, e.target.value)}
-                                  style={{ width:"100%", textAlign:"center", background:active ? "#fff" : "#f8f9fc", border:"2px solid " + (active ? ac.primary : "#e0e5f0"), color:active ? "#1a2340" : "#8fa0bc", borderRadius:7, padding:"5px", fontSize:13, fontFamily:"inherit", outline:"none", fontWeight:600, transition:"border-color 0.2s" }} />
-                                <button onClick={() => setQty(sku.id, qty+1)} style={{ width:29, height:29, borderRadius:7, background:active ? ac.primary : "#f0f2f8", border:"1.5px solid " + (active ? ac.primary : "#e0e5f0"), color:active ? "#fff" : "#5a6a88", cursor:"pointer", fontSize:17, display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"inherit" }}>+</button>
-                              </div>
-                              {active && (
-                                <PatternSelector sku={sku} selectedPatternId={selId} onSelect={selectPattern} showOverhang={showOverhang} />
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          <div style={{ padding:"13px 24px", borderTop:"1px solid #eef1f8", display:"flex", gap:10, alignItems:"center" }}>
-            {step > 0 && (
-              <button onClick={() => setStep(s => s-1)} style={{ padding:"8px 18px", borderRadius:50, background:"none", border:"2px solid #e0e5f0", color:"#5a6a88", cursor:"pointer", fontSize:12, fontFamily:"inherit", fontWeight:500 }}>Previous</button>
-            )}
-            {step < steps.length - 1 && (
-              <button onClick={() => setStep(s => s+1)} style={{ padding:"8px 22px", borderRadius:50, background:"#1782f5", border:"none", color:"#fff", cursor:"pointer", fontSize:12, fontFamily:"inherit", fontWeight:600, boxShadow:"0 4px 14px #1782f540", marginLeft:"auto" }}>Next Step</button>
-            )}
-            {step === steps.length - 1 && totalCartons > 0 && res && (
-              <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:8 }}>
-                {hasErrors && <span style={{ fontSize:11, color:"#dc2626", fontWeight:600 }}>Constraint violation</span>}
-                <span style={{ fontSize:12, color:hasErrors ? "#dc2626" : "#1782f5", fontWeight:600 }}>{res.pallets} pallet{res.pallets !== 1 ? "s" : ""} - {res.grossWeight.toLocaleString()} lb</span>
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
-          {res && (
-            <div style={{ padding:"11px 24px", background:"#fff", borderBottom:"1px solid #e8edf6", display:"flex", gap:18, alignItems:"center", flexWrap:"wrap" }}>
-              {[
-                { label:"PALLETS",       val:res.pallets,                               alert:false },
-                { label:"GROSS WEIGHT",  val:res.grossWeight.toLocaleString() + " lb",  alert:res.grossWeight > CONSTRAINTS.MAX_GROSS_WEIGHT },
-                { label:"FOOTPRINT",     val:res.effectiveL + '" x ' + res.effectiveW + '"', alert:false },
-                { label:"TOTAL HEIGHT",  val:res.totalH + '"',                          alert:res.totalH > CONSTRAINTS.MAX_HEIGHT },
-                { label:"FILL",          val:Math.round(res.fillPct*100) + "%",         alert:false },
-              ].map(item => (
-                <div key={item.label} style={{ display:"flex", flexDirection:"column", gap:1 }}>
-                  <div style={{ fontSize:9, color:"#8fa0bc", fontWeight:700, letterSpacing:"0.12em" }}>{item.label}</div>
-                  <div style={{ fontSize:15, fontWeight:700, color:item.alert ? "#dc2626" : "#1a2340", fontFamily:"'Space Grotesk',sans-serif" }}>{item.val}</div>
-                </div>
-              ))}
-              {warnings.length > 0 && (
-                <div style={{ marginLeft:"auto", background:hasErrors ? "#fef2f2" : "#fffbeb", border:"1.5px solid " + (hasErrors ? "#fca5a5" : "#fcd49a"), borderRadius:8, padding:"5px 11px", fontSize:10, color:hasErrors ? "#dc2626" : "#d97706", fontWeight:600 }}>
-                  {warnings.length} {warnings.length === 1 ? "issue" : "issues"}
-                </div>
-              )}
-            </div>
-          )}
-
-          {warnings.length > 0 && <WarningBanner warnings={warnings} />}
-
-          <div style={{ flex:1, overflowY:"auto", display:"flex", flexDirection:"column" }}>
-            <PalletVisualizer
-              layers={layers}
-              activeLayer={Math.min(activeLayer, Math.max(0, layers.length-1))}
-              onLayerClick={setActiveLayer}
-              res={res}
-              palletType={palletType}
-            />
-          </div>
-
-          {res && (
-            <div style={{ padding:"10px 24px", background:"#fff", borderTop:"1px solid #e8edf6", display:"flex", gap:7, flexWrap:"wrap" }}>
-              {SKU_DATA.filter(s => (qtys[s.id] || 0) > 0).map(sku => {
-                const ac = ACCENT[sku.item];
-                const all = generatePatterns(sku);
-                const selP = all.find(p => p.id === selectedPatterns[sku.id]) || all[0];
-                return (
-                  <div key={sku.id} style={{ display:"flex", alignItems:"center", gap:6, background:ac.light, border:"1px solid " + ac.mid, borderRadius:8, padding:"5px 10px" }}>
-                    <div style={{ width:6, height:6, borderRadius:2, background:ac.primary, flexShrink:0 }} />
-                    <span style={{ fontSize:11, fontWeight:600, color:ac.primary }}>{sku.item}</span>
-                    <span style={{ fontSize:11, color:"#5a6a88" }}>{sku.size}</span>
-                    <span style={{ fontSize:11, fontWeight:700, color:"#1a2340" }}>{qtys[sku.id]} ctns</span>
-                    {selP && <span style={{ fontSize:10, color:"#8fa0bc" }}>{selP.cpl}/layer</span>}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-      </div>
-    );
-  }
-
-
-
-  // ---- PDF / PULL SHEET ----
-  const LOGO_URI = "data:image/png;base64,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";
+  // ─── PRINT / PULL SHEET ──────────────────────────────────────────────────────
+  const LOGO_URI = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iNTYiIHZpZXdCb3g9IjAgMCAxODAgNTYiPjxyZWN0IHdpZHRoPSIxODAiIGhlaWdodD0iNTYiIHJ4PSI4IiBmaWxsPSIjMWEyMzQwIi8+PHJlY3QgeD0iOCIgeT0iOCIgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iNiIgZmlsbD0iIzE3ODJmNSIvPjx0ZXh0IHg9IjI0IiB5PSIyOSIgZm9udC1mYW1pbHk9IkFyaWFsLHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTgiIGZvbnQtd2VpZ2h0PSI5MDAiIGZpbGw9IndoaXRlIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5TPC90ZXh0Pjx0ZXh0IHg9IjUyIiB5PSIyMiIgZm9udC1mYW1pbHk9IkFyaWFsLHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTMiIGZvbnQtd2VpZ2h0PSI3MDAiIGZpbGw9IndoaXRlIj5TTVQgRVhQTzwvdGV4dD48dGV4dCB4PSI1MiIgeT0iMzgiIGZvbnQtZmFtaWx5PSJBcmlhbCxzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM4ZmEwYmMiIGxldHRlci1zcGFjaW5nPSIxIj5HTEVOTU9SRSBJTkRVU1RSSUVTPC90ZXh0Pjwvc3ZnPg==";
 
   function buildSVGDiagram(pattern, sku, px) {
-    // Returns an SVG string for the top-down pattern diagram
     const PL2 = 48, PW2 = 40;
     const maxX = Math.max(PL2, ...pattern.rects.map(r => r.x + r.w));
     const maxY = Math.max(PW2, ...pattern.rects.map(r => r.y + r.h));
@@ -926,13 +1124,10 @@
     return "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(svgStr)));
   }
 
-  function generatePullSheet(qtys, res, layers, selectedPatterns, palletType) {
+  function generatePullSheet(qtys, res, layers, selectedPatterns, palletType, canvasSnapshot) {
     if (!res) return;
-
     const date = new Date().toLocaleDateString("en-US", { year:"numeric", month:"long", day:"numeric" });
     const activeSKUs = SKU_DATA.filter(s => (qtys[s.id] || 0) > 0);
-
-    // Build pattern diagram data URIs
     const diagrams = {};
     activeSKUs.forEach(function(sku) {
       const all = generatePatterns(sku);
@@ -940,7 +1135,6 @@
       if (selP) diagrams[sku.id] = { uri: svgToDataURI(buildSVGDiagram(selP, sku, 90)), pattern: selP };
     });
 
-    // SKU rows HTML
     let skuRows = "";
     activeSKUs.forEach(function(sku, idx) {
       const qty    = qtys[sku.id];
@@ -954,109 +1148,389 @@
       const col = itemColors[sku.item] || "#333";
       const layers_count = selP ? Math.ceil(qty / selP.cpl) : "-";
       skuRows += '<tr style="background:' + bg + ';">'
-        + '<td style="padding:8px 10px; border-bottom:1px solid #eef1f8;">'
-        +   '<span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:' + col + ';margin-right:6px;vertical-align:middle;"></span>'
-        +   '<strong style="color:#1a2340;">' + sku.item + '</strong>'
-        + '</td>'
+        + '<td style="padding:8px 10px; border-bottom:1px solid #eef1f8;"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:' + col + ';margin-right:6px;vertical-align:middle;"></span><strong style="color:#1a2340;">' + sku.item + '</strong></td>'
         + '<td style="padding:8px 10px; border-bottom:1px solid #eef1f8; color:#1a2340; font-weight:600;">' + sku.size + '</td>'
         + '<td style="padding:8px 10px; border-bottom:1px solid #eef1f8; color:#1a2340; font-weight:700; text-align:center;">' + qty + '</td>'
         + '<td style="padding:8px 10px; border-bottom:1px solid #eef1f8; color:#5a6a88; text-align:center;">' + (selP ? selP.cpl : "-") + '/layer</td>'
         + '<td style="padding:8px 10px; border-bottom:1px solid #eef1f8; color:#5a6a88; text-align:center;">' + layers_count + ' layer' + (layers_count !== 1 ? "s" : "") + '</td>'
         + '<td style="padding:8px 10px; border-bottom:1px solid #eef1f8; color:#5a6a88; text-align:center;">' + (selP ? selP.label : "-") + '</td>'
         + '<td style="padding:8px 10px; border-bottom:1px solid #eef1f8; color:' + (ohText === "None" ? "#1a9e6a" : "#d4820a") + '; text-align:center; font-weight:600;">' + ohText + '</td>'
-        + '<td style="padding:8px 10px; border-bottom:1px solid #eef1f8; text-align:center;">'
-        +   (d ? '<img src="' + d.uri + '" width="60" height="60" style="display:block;margin:0 auto;" />' : "-")
-        + '</td>'
+        + '<td style="padding:8px 10px; border-bottom:1px solid #eef1f8; text-align:center;">' + (d ? '<img src="' + d.uri + '" width="60" height="60" style="display:block;margin:0 auto;" />' : "-") + '</td>'
         + '</tr>';
     });
 
     const heightColor = res.totalH > 65 ? "#dc2626" : res.totalH > 60 ? "#d97706" : "#1a2340";
     const weightColor = res.grossWeight > 2500 ? "#dc2626" : res.grossWeight > 2200 ? "#d97706" : "#1a2340";
 
-    const html = '<!DOCTYPE html><html><head><meta charset="UTF-8">'
-      + '<title>SMT Pallet Pull Sheet</title>'
-      + '<style>'
-      + '* { box-sizing:border-box; margin:0; padding:0; }'
-      + 'body { font-family: Arial, Helvetica, sans-serif; background:#fff; color:#1a2340; font-size:12px; }'
-      + '@media print { body { margin:0; } .no-print { display:none !important; } @page { margin: 0.5in; size: letter; } }'
-      + 'table { border-collapse: collapse; width:100%; }'
-      + 'th { background:#1a2340; color:#fff; padding:8px 10px; text-align:left; font-size:10px; letter-spacing:0.08em; text-transform:uppercase; }'
-      + 'th.center { text-align:center; }'
-      + '</style>'
+    const html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>SMT Pallet Pull Sheet</title>'
+      + '<style>* { box-sizing:border-box; margin:0; padding:0; } body { font-family: Arial, Helvetica, sans-serif; background:#fff; color:#1a2340; font-size:12px; } @media print { body { margin:0; } .no-print { display:none !important; } @page { margin: 0.5in; size: letter; } } table { border-collapse: collapse; width:100%; } th { background:#1a2340; color:#fff; padding:8px 10px; text-align:left; font-size:10px; letter-spacing:0.08em; text-transform:uppercase; } th.center { text-align:center; }</style>'
       + '</head><body>'
       + '<div style="max-width:780px; margin:0 auto; padding:24px;">'
-
-      // Header
       + '<div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:20px; padding-bottom:16px; border-bottom:2px solid #1a2340;">'
-      +   '<img src="' + LOGO_URI + '" height="56" style="object-fit:contain;" />'
-      +   '<div style="text-align:right;">'
-      +     '<div style="font-size:20px; font-weight:700; color:#1a2340; letter-spacing:0.04em;">PALLET PULL SHEET</div>'
-      +     '<div style="font-size:12px; color:#8fa0bc; margin-top:4px;">' + date + '</div>'
-      +     '<div style="font-size:11px; color:#8fa0bc; margin-top:2px;">Pallet type: ' + palletType.label + ' (' + palletType.height + '" deck)</div>'
-      +   '</div>'
+      + '<img src="' + LOGO_URI + '" height="56" style="object-fit:contain;" />'
+      + '<div style="text-align:right;"><div style="font-size:20px; font-weight:700; color:#1a2340; letter-spacing:0.04em;">PALLET PULL SHEET</div><div style="font-size:12px; color:#8fa0bc; margin-top:4px;">' + date + '</div><div style="font-size:11px; color:#8fa0bc; margin-top:2px;">Pallet type: ' + palletType.label + ' (' + palletType.height + '" deck)</div></div>'
       + '</div>'
-
-      // Summary cards
       + '<div style="display:grid; grid-template-columns:repeat(5,1fr); gap:10px; margin-bottom:20px;">'
-      + [
-          ["PALLETS",       res.pallets,                                      "#1a2340"],
-          ["TOTAL CARTONS", res.totalCartons,                                 "#1a2340"],
-          ["GROSS WEIGHT",  res.grossWeight.toLocaleString() + " lb",         weightColor],
-          ["FOOTPRINT",     res.effectiveL + '" x ' + res.effectiveW + '"',   "#1a2340"],
-          ["TOTAL HEIGHT",  res.totalH + '"',                                  heightColor],
-        ].map(function(item) {
-          return '<div style="background:#f8f9fc; border:1px solid #e0e5f0; border-radius:8px; padding:10px 12px;">'
-            + '<div style="font-size:9px; color:#8fa0bc; font-weight:700; letter-spacing:0.1em; margin-bottom:4px;">' + item[0] + '</div>'
-            + '<div style="font-size:18px; font-weight:700; color:' + item[2] + ';">' + item[1] + '</div>'
-            + '</div>';
-        }).join("")
+      + [["PALLETS", res.pallets, "#1a2340"], ["TOTAL CARTONS", res.totalCartons, "#1a2340"], ["GROSS WEIGHT", res.grossWeight.toLocaleString() + " lb", weightColor], ["FOOTPRINT", res.effectiveL + '" x ' + res.effectiveW + '"', "#1a2340"], ["TOTAL HEIGHT", res.totalH + '"', heightColor]]
+        .map(function(item) { return '<div style="background:#f8f9fc; border:1px solid #e0e5f0; border-radius:8px; padding:10px 12px;"><div style="font-size:9px; color:#8fa0bc; font-weight:700; letter-spacing:0.1em; margin-bottom:4px;">' + item[0] + '</div><div style="font-size:18px; font-weight:700; color:' + item[2] + ';">' + item[1] + '</div></div>'; }).join("")
       + '</div>'
-
-      // SKU table
-      + '<table>'
-      + '<thead><tr>'
-      + '<th>Item</th><th>Size</th><th class="center">Qty (Ctns)</th><th class="center">CPL</th><th class="center">Layers</th><th>Pattern</th><th class="center">Overhang</th><th class="center">Diagram</th>'
-      + '</tr></thead>'
-      + '<tbody>' + skuRows + '</tbody>'
-      + '</table>'
-
-      // Footer
-      + '<div style="margin-top:24px; padding-top:12px; border-top:1px solid #e0e5f0; display:flex; justify-content:space-between; align-items:center;">'
-      +   '<div style="font-size:10px; color:#8fa0bc;">SMT Expo - a division of Glenmore Industries</div>'
-      +   '<div style="font-size:10px; color:#8fa0bc;">Generated ' + date + '</div>'
+      + (canvasSnapshot ? '<div style="margin-bottom:20px;"><div style="font-size:10px; font-weight:700; color:#8fa0bc; letter-spacing:0.1em; margin-bottom:8px;">3D PALLET VIEW (snapshot)</div><img src="' + canvasSnapshot + '" style="max-width:100%; border-radius:8px; border:1px solid #e0e5f0;" /></div>' : '')
+      + '<table><thead><tr><th>Item</th><th>Size</th><th class="center">Qty (Ctns)</th><th class="center">CPL</th><th class="center">Layers</th><th>Pattern</th><th class="center">Overhang</th><th class="center">Diagram</th></tr></thead><tbody>' + skuRows + '</tbody></table>'
+      + '<div style="margin-top:24px; padding-top:12px; border-top:1px solid #e0e5f0; display:flex; justify-content:space-between; align-items:center;"><div style="font-size:10px; color:#8fa0bc;">SMT Expo - a division of Glenmore Industries</div><div style="font-size:10px; color:#8fa0bc;">Generated ' + date + '</div></div>'
       + '</div>'
-
-      + '</div>'
-
-      // Print button (hidden on print)
-      + '<div class="no-print" style="text-align:center; padding:20px;">'
-      +   '<button onclick="window.print()" style="background:#1782f5; color:#fff; border:none; padding:10px 28px; border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; font-family:inherit;">Print / Save as PDF</button>'
-      +   '<button onclick="window.close()" style="background:none; border:1.5px solid #e0e5f0; color:#5a6a88; padding:10px 20px; border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; font-family:inherit; margin-left:10px;">Close</button>'
-      + '</div>'
+      + '<div class="no-print" style="text-align:center; padding:20px;"><button onclick="window.print()" style="background:#1782f5; color:#fff; border:none; padding:10px 28px; border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; font-family:inherit;">Print / Save as PDF</button><button onclick="window.close()" style="background:none; border:1.5px solid #e0e5f0; color:#5a6a88; padding:10px 20px; border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; font-family:inherit; margin-left:10px;">Close</button></div>'
       + '</body></html>';
 
-    const win = window.open("", "_blank", "width=860,height=900");
-    win.document.write(html);
-    win.document.close();
+    // Use Blob URL — works in sandboxed iframes where window.open is blocked
+    const blob = new Blob([html], { type: "text/html" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href     = url;
+    a.download = "SMT_Pallet_Pull_Sheet_" + new Date().toISOString().slice(0,10) + ".html";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
   }
 
-  function PrintButton({ qtys, res, layers, selectedPatterns, palletType }) {
+  function PrintButton({ qtys, res, layers, selectedPatterns, palletType, viewMode }) {
     if (!res) return null;
+    const [status, setStatus] = React.useState("idle"); // idle | loading | done
+
+    const handlePrint = () => {
+      setStatus("loading");
+      let canvasSnapshot = null;
+      if (viewMode === "3d") {
+        const canvas = document.querySelector(".three-canvas");
+        if (canvas) {
+          try { canvasSnapshot = canvas.toDataURL("image/png"); } catch(e) {}
+        }
+      }
+      try {
+        generatePullSheet(qtys, res, layers, selectedPatterns, palletType, canvasSnapshot);
+        setStatus("done");
+        setTimeout(() => setStatus("idle"), 2500);
+      } catch(e) {
+        setStatus("idle");
+        console.error("Pull sheet error:", e);
+      }
+    };
+
     return (
-      <button
-        onClick={() => generatePullSheet(qtys, res, layers, selectedPatterns, palletType)}
-        style={{
-          display:"flex", alignItems:"center", gap:7,
-          background:"#1a2340", border:"none", color:"#fff",
-          padding:"6px 16px", borderRadius:7, cursor:"pointer",
-          fontSize:11, fontFamily:"inherit", fontWeight:600,
-          boxShadow:"0 2px 8px #1a234030",
-          transition:"opacity 0.15s",
-        }}
-      >
-        <span style={{ fontSize:13 }}>&#128438;</span>
-        Pull Sheet
+      <button onClick={handlePrint} disabled={status === "loading"} style={{
+        display:"flex", alignItems:"center", gap:7,
+        background: status === "done" ? "#1a9e6a" : "#1a2340",
+        border:"none", color:"#fff", padding:"6px 16px", borderRadius:7,
+        cursor: status === "loading" ? "wait" : "pointer",
+        fontSize:11, fontFamily:"inherit", fontWeight:600,
+        boxShadow:"0 2px 8px #1a234030", transition:"background 0.3s",
+        opacity: status === "loading" ? 0.7 : 1,
+      }}>
+        <span style={{ fontSize:13 }}>
+          {status === "done" ? "✓" : status === "loading" ? "…" : "🖨"}
+        </span>
+        {status === "done" ? "Downloaded!" : status === "loading" ? "Generating…" : "Pull Sheet"}
       </button>
+    );
+  }
+
+  // ─── APP ─────────────────────────────────────────────────────────────────────
+  const grouped = SKU_DATA.reduce((acc, s) => { (acc[s.item] = acc[s.item] || []).push(s); return acc; }, {});
+
+  function App() {
+    const [qtys, setQtys]                         = useState({});
+    const [palletType, setPalletType]             = useState(PALLET_TYPES[0]);
+    const [step, setStep]                         = useState(0);
+    const [activeLayer, setActiveLayer]           = useState(0);
+    const [showOverhang, setShowOverhang]         = useState(true);
+    const [selectedPatterns, setSelectedPatterns] = useState({});
+    const [viewMode, setViewMode]                 = useState("2d"); // "2d" | "3d"
+
+    const setQty = (id, v) => {
+      const val = Math.max(0, parseInt(v) || 0);
+      setQtys(p => ({ ...p, [id]: val }));
+      if (val > 0 && !selectedPatterns[id]) {
+        const patterns = generatePatterns(SKU_DATA.find(s => s.id === id));
+        if (patterns.length) setSelectedPatterns(p => ({ ...p, [id]: patterns[0].id }));
+      }
+    };
+
+    const selectPattern = (skuId, patternId) => {
+      setSelectedPatterns(p => ({ ...p, [skuId]: patternId }));
+      setActiveLayer(0);
+    };
+
+    const totalCartons = SKU_DATA.reduce((s, sk) => s + (qtys[sk.id] || 0), 0);
+    const layers   = totalCartons > 0 ? buildLayers(qtys, selectedPatterns) : [];
+    const res      = totalCartons > 0 ? calculate(qtys, palletType, selectedPatterns) : null;
+    const warnings = res ? getWarnings(res, layers) : [];
+    const hasErrors = warnings.some(w => w.level === "error");
+    const steps = ["Pallet Type", "SKU Quantities"];
+
+    return (
+      <div style={{ display:"flex", height:"100vh", background:"#eef1f8", fontFamily:"'DM Sans',sans-serif" }}>
+
+        {/* ── LEFT PANEL ── */}
+        <div style={{ width:490, display:"flex", flexDirection:"column", background:"#fff", boxShadow:"2px 0 20px #1a23400e", zIndex:2, overflow:"hidden" }}>
+
+          <div style={{ padding:"18px 24px", borderBottom:"1px solid #eef1f8", display:"flex", alignItems:"center", gap:12 }}>
+            <div style={{ width:34, height:34, background:"linear-gradient(135deg,#1782f5,#0d5fc9)", borderRadius:10, display:"flex", alignItems:"center", justifyContent:"center", fontSize:16, boxShadow:"0 4px 12px #1782f540" }}>&#128666;</div>
+            <div>
+              <div style={{ fontSize:14, fontWeight:700, color:"#1a2340", fontFamily:"'Space Grotesk',sans-serif" }}>SMT Pallet Calculator</div>
+              <div style={{ fontSize:10, color:"#8fa0bc", marginTop:1 }}>Mixed SKU - Pallet Optimizer</div>
+            </div>
+            <div style={{ marginLeft:"auto", display:"flex", gap:8, alignItems:"center" }}>
+              <PrintButton qtys={qtys} res={res} layers={layers} selectedPatterns={selectedPatterns} palletType={palletType} viewMode={viewMode} />
+              {totalCartons > 0 && (
+                <button onClick={() => { setQtys({}); setSelectedPatterns({}); setActiveLayer(0); }} style={{ background:"none", border:"1.5px solid #e0e5f0", color:"#8fa0bc", padding:"4px 11px", borderRadius:6, cursor:"pointer", fontSize:11, fontFamily:"inherit", fontWeight:500 }}>Reset</button>
+              )}
+            </div>
+          </div>
+
+          <div style={{ display:"flex", padding:"0 24px", borderBottom:"1px solid #eef1f8" }}>
+            {steps.map((s, i) => (
+              <button key={i} onClick={() => setStep(i)} style={{ padding:"12px 0", marginRight:20, background:"none", border:"none", fontSize:12, fontWeight:step===i ? 600 : 400, color:step===i ? "#1782f5" : "#8fa0bc", cursor:"pointer", fontFamily:"inherit", borderBottom:step===i ? "2px solid #1782f5" : "2px solid transparent", transition:"all 0.15s" }}>
+                <span style={{ display:"inline-flex", alignItems:"center", gap:6 }}>
+                  <span style={{ width:16, height:16, borderRadius:"50%", background:step===i ? "#1782f5" : "#e4e8f4", color:step===i ? "#fff" : "#8fa0bc", fontSize:9, display:"inline-flex", alignItems:"center", justifyContent:"center", fontWeight:700 }}>{i+1}</span>
+                  {s}
+                </span>
+              </button>
+            ))}
+          </div>
+
+          <div style={{ flex:1, overflowY:"auto", padding:"20px 24px" }}>
+
+            {step === 0 && (
+              <div style={{ animation:"fadeUp 0.2s ease" }}>
+                <div style={{ fontSize:13, color:"#3a4a6b", lineHeight:1.7, marginBottom:20 }}>Select the type of pallet for this shipment.</div>
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+                  {PALLET_TYPES.map(pt => {
+                    const active = palletType.id === pt.id;
+                    return (
+                      <button key={pt.id} onClick={() => setPalletType(pt)} style={{ background: active ? "#e8f2ff" : "#f8f9fc", border:"2px solid " + (active ? "#1782f5" : "#e0e5f0"), borderRadius:12, padding:"16px 14px", cursor:"pointer", textAlign:"left", fontFamily:"inherit", transition:"all 0.2s", boxShadow: active ? "0 4px 16px #1782f520" : "none" }}>
+                        <div style={{ fontSize:13, fontWeight:700, color:active ? "#1782f5" : "#1a2340", marginBottom:4, fontFamily:"'Space Grotesk',sans-serif" }}>{pt.label}</div>
+                        <div style={{ fontSize:11, color:active ? "#1782f5" : "#8fa0bc" }}>{pt.height}" deck height</div>
+                        {active && <div style={{ marginTop:7, display:"inline-block", background:"#1782f5", color:"#fff", fontSize:9, padding:"2px 7px", borderRadius:10, letterSpacing:"0.06em", fontWeight:600 }}>SELECTED</div>}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={{ marginTop:24, padding:"14px 16px", background:"#f8f9fd", border:"1px solid #e8edf6", borderRadius:10 }}>
+                  <div style={{ fontSize:10, fontWeight:700, color:"#8fa0bc", letterSpacing:"0.1em", marginBottom:10 }}>ACTIVE SHIPPING CONSTRAINTS</div>
+                  {[
+                    ["Max height",         CONSTRAINTS.MAX_HEIGHT + '" (' + CONSTRAINTS.WARN_HEIGHT + '" soft warning)'],
+                    ["Max overhang",       CONSTRAINTS.MAX_OVERHANG + '" per side (LTL standard)'],
+                    ["Max gross weight",   CONSTRAINTS.MAX_GROSS_WEIGHT.toLocaleString() + " lb per pallet"],
+                    ["Min cartons/layer",  CONSTRAINTS.MIN_CPL + " (patterns below this are hidden)"],
+                    ["Min pallet coverage", Math.round(CONSTRAINTS.MIN_COVERAGE*100) + "% of footprint"],
+                    ["Layer stability flag", CONSTRAINTS.MAX_LAYERS + " layers"],
+                  ].map(([k, v]) => (
+                    <div key={k} style={{ display:"flex", justifyContent:"space-between", fontSize:11, marginBottom:5 }}>
+                      <span style={{ color:"#5a6a88" }}>{k}</span>
+                      <span style={{ color:"#1a2340", fontWeight:600 }}>{v}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {step === 1 && (
+              <div style={{ animation:"fadeUp 0.2s ease" }}>
+                <div style={{ fontSize:13, color:"#3a4a6b", lineHeight:1.7, marginBottom:14 }}>
+                  Enter carton quantities. Select a layer pattern — the visualizer updates instantly.
+                </div>
+
+                <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:20, padding:"9px 13px", background:"#f8f9fd", borderRadius:10, border:"1px solid #e8edf6" }}>
+                  <span style={{ fontSize:11, color:"#5a6a88", fontWeight:600 }}>Layer Pattern:</span>
+                  <div style={{ display:"flex", borderRadius:20, overflow:"hidden", border:"1.5px solid #e0e5f0", background:"#fff" }}>
+                    {[{id:true, label:"Overhang"}, {id:false, label:"Aligned"}].map(opt => (
+                      <button key={opt.label} onClick={() => setShowOverhang(opt.id)} style={{ padding:"5px 15px", border:"none", cursor:"pointer", fontSize:11, fontFamily:"inherit", fontWeight:showOverhang === opt.id ? 600 : 400, background:showOverhang === opt.id ? "#1782f5" : "transparent", color:showOverhang === opt.id ? "#fff" : "#8fa0bc", transition:"all 0.15s" }}>{opt.label}</button>
+                    ))}
+                  </div>
+                  <span style={{ fontSize:10, color:"#8fa0bc" }}>{showOverhang ? "Max " + CONSTRAINTS.MAX_OVERHANG + '" per side' : "Zero-overhang only"}</span>
+                </div>
+
+                {Object.entries(grouped).map(([item, skus]) => {
+                  const ac = ACCENT[item];
+                  return (
+                    <div key={item} style={{ marginBottom:22 }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:9 }}>
+                        <div style={{ width:7, height:7, borderRadius:2, background:ac.primary }} />
+                        <span style={{ fontSize:11, color:ac.primary, fontWeight:700, letterSpacing:"0.1em" }}>{item.toUpperCase()}</span>
+                      </div>
+                      <div style={{ borderRadius:10, border:"1px solid " + ac.mid, overflow:"hidden" }}>
+                        {skus.map((sku, i) => {
+                          const qty = qtys[sku.id] || 0;
+                          const active = qty > 0;
+                          const all = generatePatterns(sku);
+                          const selId = selectedPatterns[sku.id] || (all[0] && all[0].id);
+                          const selP = all.find(p => p.id === selId);
+                          return (
+                            <div key={sku.id}>
+                              <div style={{ display:"grid", gridTemplateColumns:"1fr 32px 58px 32px", alignItems:"center", gap:7, padding:"10px 13px", background: active ? ac.light : "#fff", borderTop: i > 0 ? "1px solid " + (active ? ac.mid : "#f0f2f8") : "none", transition:"background 0.2s" }}>
+                                <div>
+                                  <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
+                                    <span style={{ fontSize:13, fontWeight:active ? 600 : 400, color:active ? "#1a2340" : "#5a6a88" }}>{sku.size}</span>
+                                    {active && selP && (
+                                      <span style={{ fontSize:9, color:selP.aligned ? "#1a9e6a" : "#d4820a", fontWeight:600, background:selP.aligned ? "#e6f9f2" : "#fff4e5", padding:"1px 5px", borderRadius:8, border:"1px solid " + (selP.aligned ? "#a8e8cd" : "#fcd49a") }}>
+                                        {selP.aligned ? "aligned" : ("+" + (selP.ohL > 0 ? selP.ohL + '"L' : "") + (selP.ohW > 0 ? " " + selP.ohW.toFixed(1) + '"W' : ""))}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div style={{ fontSize:10, color:"#8fa0bc", marginTop:2 }}>{sku.L}x{sku.W}x{sku.H}" - {sku.weight} lb - max {sku.cpp}/plt</div>
+                                  {active && selP && <div style={{ fontSize:10, color:ac.primary, marginTop:1 }}>{selP.cpl}/layer - {selP.label}</div>}
+                                </div>
+                                <button onClick={() => setQty(sku.id, qty-1)} style={{ width:29, height:29, borderRadius:7, background:"#f0f2f8", border:"1.5px solid #e0e5f0", color:"#5a6a88", cursor:"pointer", fontSize:17, display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"inherit" }}>-</button>
+                                <input type="number" min={0} value={qty || ""} placeholder="0" onChange={e => setQty(sku.id, e.target.value)} style={{ width:"100%", textAlign:"center", background:active ? "#fff" : "#f8f9fc", border:"2px solid " + (active ? ac.primary : "#e0e5f0"), color:active ? "#1a2340" : "#8fa0bc", borderRadius:7, padding:"5px", fontSize:13, fontFamily:"inherit", outline:"none", fontWeight:600, transition:"border-color 0.2s" }} />
+                                <button onClick={() => setQty(sku.id, qty+1)} style={{ width:29, height:29, borderRadius:7, background:active ? ac.primary : "#f0f2f8", border:"1.5px solid " + (active ? ac.primary : "#e0e5f0"), color:active ? "#fff" : "#5a6a88", cursor:"pointer", fontSize:17, display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"inherit" }}>+</button>
+                              </div>
+                              {active && (
+                                <PatternSelector sku={sku} selectedPatternId={selId} onSelect={selectPattern} showOverhang={showOverhang} />
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div style={{ padding:"13px 24px", borderTop:"1px solid #eef1f8", display:"flex", gap:10, alignItems:"center" }}>
+            {step > 0 && (
+              <button onClick={() => setStep(s => s-1)} style={{ padding:"8px 18px", borderRadius:50, background:"none", border:"2px solid #e0e5f0", color:"#5a6a88", cursor:"pointer", fontSize:12, fontFamily:"inherit", fontWeight:500 }}>Previous</button>
+            )}
+            {step < steps.length - 1 && (
+              <button onClick={() => setStep(s => s+1)} style={{ padding:"8px 22px", borderRadius:50, background:"#1782f5", border:"none", color:"#fff", cursor:"pointer", fontSize:12, fontFamily:"inherit", fontWeight:600, boxShadow:"0 4px 14px #1782f540", marginLeft:"auto" }}>Next Step</button>
+            )}
+            {step === steps.length - 1 && totalCartons > 0 && res && (
+              <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:8 }}>
+                {hasErrors && <span style={{ fontSize:11, color:"#dc2626", fontWeight:600 }}>Constraint violation</span>}
+                <span style={{ fontSize:12, color:hasErrors ? "#dc2626" : "#1782f5", fontWeight:600 }}>{res.pallets} pallet{res.pallets !== 1 ? "s" : ""} - {res.grossWeight.toLocaleString()} lb</span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ── RIGHT PANEL ── */}
+        <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+
+          {/* Stats bar */}
+          {res && (
+            <div style={{ padding:"11px 24px", background:"#fff", borderBottom:"1px solid #e8edf6", display:"flex", gap:18, alignItems:"center", flexWrap:"wrap" }}>
+              {[
+                { label:"PALLETS",       val:res.pallets,                               alert:false },
+                { label:"GROSS WEIGHT",  val:res.grossWeight.toLocaleString() + " lb",  alert:res.grossWeight > CONSTRAINTS.MAX_GROSS_WEIGHT },
+                { label:"FOOTPRINT",     val:res.effectiveL + '" x ' + res.effectiveW + '"', alert:false },
+                { label:"TOTAL HEIGHT",  val:res.totalH + '"',                          alert:res.totalH > CONSTRAINTS.MAX_HEIGHT },
+                { label:"FILL",          val:Math.round(res.fillPct*100) + "%",         alert:false },
+              ].map(item => (
+                <div key={item.label} style={{ display:"flex", flexDirection:"column", gap:1 }}>
+                  <div style={{ fontSize:9, color:"#8fa0bc", fontWeight:700, letterSpacing:"0.12em" }}>{item.label}</div>
+                  <div style={{ fontSize:15, fontWeight:700, color:item.alert ? "#dc2626" : "#1a2340", fontFamily:"'Space Grotesk',sans-serif" }}>{item.val}</div>
+                </div>
+              ))}
+
+              {/* View mode toggle */}
+              <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:10 }}>
+                {warnings.length > 0 && (
+                  <div style={{ background:hasErrors ? "#fef2f2" : "#fffbeb", border:"1.5px solid " + (hasErrors ? "#fca5a5" : "#fcd49a"), borderRadius:8, padding:"5px 11px", fontSize:10, color:hasErrors ? "#dc2626" : "#d97706", fontWeight:600 }}>
+                    {warnings.length} {warnings.length === 1 ? "issue" : "issues"}
+                  </div>
+                )}
+                {/* 2D / 3D toggle */}
+                <div style={{ display:"flex", borderRadius:8, overflow:"hidden", border:"1.5px solid #e0e5f0", background:"#f8f9fc" }}>
+                  {["2d","3d"].map(mode => (
+                    <button key={mode} onClick={() => setViewMode(mode)} style={{
+                      padding:"5px 14px", border:"none", cursor:"pointer", fontSize:11, fontFamily:"inherit",
+                      fontWeight:viewMode === mode ? 700 : 400,
+                      background:viewMode === mode ? "#1782f5" : "transparent",
+                      color:viewMode === mode ? "#fff" : "#8fa0bc",
+                      transition:"all 0.15s",
+                      letterSpacing:"0.04em",
+                    }}>
+                      {mode.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {warnings.length > 0 && <WarningBanner warnings={warnings} />}
+
+          {/* Main visualizer area */}
+          <div style={{ flex:1, overflow:"hidden", display:"flex", flexDirection:"column", background: viewMode === "3d" ? "#1a2340" : "transparent" }}>
+            {viewMode === "3d" ? (
+              <div style={{ flex:1, display:"flex", flexDirection:"column", padding:12, gap:0, minHeight:0 }}>
+                {/* Layer selector in 3D mode */}
+                {layers.length > 0 && (
+                  <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:10, paddingLeft:4 }}>
+                    {layers.map((l, i) => {
+                      const isActive = i === Math.min(activeLayer, layers.length-1);
+                      const lac = ACCENT[l.slots[0].sku.item];
+                      const label = l.slots.map(s => s.sku.size).join(" + ");
+                      return (
+                        <button key={i} onClick={() => setActiveLayer(i)} style={{
+                          padding:"4px 10px", borderRadius:20, fontSize:10, fontFamily:"inherit",
+                          cursor:"pointer", fontWeight:isActive ? 600 : 400, border:"none",
+                          background: isActive ? lac.primary : lac.primary + "22",
+                          color: isActive ? "#fff" : lac.primary,
+                          transition:"all 0.15s",
+                          boxShadow: isActive ? "0 2px 8px " + lac.primary + "50" : "none",
+                        }}>
+                          L{i+1} {label}
+                        </button>
+                      );
+                    })}
+                    <span style={{ fontSize:10, color:"#3a5070", alignSelf:"center", marginLeft:4 }}>← click to highlight layer</span>
+                  </div>
+                )}
+                <ThreeRenderer
+                  layers={layers}
+                  res={res}
+                  palletType={palletType}
+                  activeLayer={Math.min(activeLayer, Math.max(0, layers.length-1))}
+                  onLayerClick={setActiveLayer}
+                />
+              </div>
+            ) : (
+              <div style={{ flex:1, overflowY:"auto", display:"flex", flexDirection:"column" }}>
+                <PalletVisualizer2D
+                  layers={layers}
+                  activeLayer={Math.min(activeLayer, Math.max(0, layers.length-1))}
+                  onLayerClick={setActiveLayer}
+                  res={res}
+                  palletType={palletType}
+                />
+              </div>
+            )}
+          </div>
+
+          {/* SKU legend footer */}
+          {res && viewMode === "2d" && (
+            <div style={{ padding:"10px 24px", background:"#fff", borderTop:"1px solid #e8edf6", display:"flex", gap:7, flexWrap:"wrap" }}>
+              {SKU_DATA.filter(s => (qtys[s.id] || 0) > 0).map(sku => {
+                const ac = ACCENT[sku.item];
+                const all = generatePatterns(sku);
+                const selP = all.find(p => p.id === selectedPatterns[sku.id]) || all[0];
+                return (
+                  <div key={sku.id} style={{ display:"flex", alignItems:"center", gap:6, background:ac.light, border:"1px solid " + ac.mid, borderRadius:8, padding:"5px 10px" }}>
+                    <div style={{ width:6, height:6, borderRadius:2, background:ac.primary, flexShrink:0 }} />
+                    <span style={{ fontSize:11, fontWeight:600, color:ac.primary }}>{sku.item}</span>
+                    <span style={{ fontSize:11, color:"#5a6a88" }}>{sku.size}</span>
+                    <span style={{ fontSize:11, fontWeight:700, color:"#1a2340" }}>{qtys[sku.id]} ctns</span>
+                    {selP && <span style={{ fontSize:10, color:"#8fa0bc" }}>{selP.cpl}/layer</span>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+      </div>
     );
   }
 
