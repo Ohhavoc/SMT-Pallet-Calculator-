@@ -141,27 +141,138 @@
     return patterns;
   }
 
-  // BUILD LAYERS
+  // MIXED LAYER BUILDER
+  // Each layer = { slots: [{sku, pattern, rects, cartonsThisSlot}], layerH }
+  // SKUs sorted heaviest layer-weight first (heaviest to bottom).
+  // Dominant SKU fills its full pattern. Secondary/tertiary SKUs fill remaining space.
+  // Max 3 SKUs per layer.
+
+  function getFreeRects(usedRects) {
+    // After placing dominant SKU rects, find largest free rectangular regions
+    // Returns array of {x, y, w, h} free zones on the 48x40 pallet
+    // Strategy: find the bounding box of used rects, offer the two L-shaped gaps
+    if (!usedRects.length) return [{ x:0, y:0, w:PL, h:PW }];
+    const maxX = Math.max(...usedRects.map(r => r.x + r.w));
+    const maxY = Math.max(...usedRects.map(r => r.y + r.h));
+    const minX = Math.min(...usedRects.map(r => r.x));
+    const minY = Math.min(...usedRects.map(r => r.y));
+    const freeRects = [];
+    // Right gap (along length)
+    if (maxX < PL) freeRects.push({ x:maxX, y:0, w:PL-maxX, h:PW });
+    // Bottom gap (along width)
+    if (maxY < PW) freeRects.push({ x:0, y:maxY, w:PL, h:PW-maxY });
+    // Left gap
+    if (minX > 0) freeRects.push({ x:0, y:0, w:minX, h:PW });
+    // Top gap
+    if (minY > 0) freeRects.push({ x:0, y:0, w:PL, h:minY });
+    return freeRects;
+  }
+
+  function fitInGap(sku, gap) {
+    // Try to fit as many cartons of sku as possible in the gap rect
+    // Try both orientations, pick the one with most cartons and least overhang
+    let best = null;
+    for (let rot = 0; rot < 2; rot++) {
+      const cw = rot ? sku.W : sku.L;
+      const ch = rot ? sku.L : sku.W;
+      const cols = Math.floor((gap.w + 0.01) / cw);
+      const rows = Math.floor((gap.h + 0.01) / ch);
+      if (cols < 1 || rows < 1) continue;
+      const rects = [];
+      for (let c = 0; c < cols; c++)
+        for (let r = 0; r < rows; r++)
+          rects.push({ x: gap.x + c*cw, y: gap.y + r*ch, w:cw, h:ch });
+      if (!rects.length) continue;
+      const ohL = Math.max(0, Math.max(...rects.map(r => r.x + r.w)) - PL);
+      const ohW = Math.max(0, Math.max(...rects.map(r => r.y + r.h)) - PW);
+      // Respect overhang constraint
+      if (ohL > CONSTRAINTS.MAX_OVERHANG || ohW > CONSTRAINTS.MAX_OVERHANG) continue;
+      const score = rects.length * 1000 - (ohL + ohW);
+      if (!best || score > best.score)
+        best = { rects, ohL, ohW, score };
+    }
+    return best;
+  }
+
   function buildLayers(qtys, selectedPatterns) {
-    const out = [];
+    // Build remaining counts
+    const remaining = {};
+    const skuList = [];
     SKU_DATA.forEach(sku => {
       const qty = qtys[sku.id] || 0;
       if (!qty) return;
+      remaining[sku.id] = qty;
       const all = generatePatterns(sku);
       const pattern = all.find(p => p.id === selectedPatterns[sku.id]) || all[0];
-      const cpl = pattern ? pattern.cpl : 1;
-      const n = Math.ceil(qty / cpl);
-      for (let i = 0; i < n; i++) {
-        const c = i < n-1 ? cpl : qty - i*cpl;
-        out.push({ sku, cartonsThisLayer:c, layerIndex:i, pattern });
-      }
+      skuList.push({ sku, pattern, cpl: pattern ? pattern.cpl : 1 });
     });
-    return out;
+
+    const layers = [];
+
+    while (skuList.some(s => remaining[s.sku.id] > 0)) {
+      // Sort by layer weight desc (heaviest layer to bottom / first)
+      const active = skuList.filter(s => remaining[s.sku.id] > 0);
+      active.sort((a, b) => {
+        const wA = Math.min(remaining[a.sku.id], a.cpl) * a.sku.weight;
+        const wB = Math.min(remaining[b.sku.id], b.cpl) * b.sku.weight;
+        return wB - wA;
+      });
+
+      const layerSlots = [];
+      let usedRects = [];
+      let skusOnLayer = 0;
+
+      for (let si = 0; si < active.length && skusOnLayer < 3; si++) {
+        const { sku, pattern, cpl } = active[si];
+        if (remaining[sku.id] <= 0) continue;
+
+        if (skusOnLayer === 0) {
+          // Dominant SKU: use its full pattern
+          const cartonsThisSlot = Math.min(remaining[sku.id], cpl);
+          const rects = pattern ? pattern.rects.slice(0, cartonsThisSlot) : [];
+          layerSlots.push({ sku, pattern, rects, cartonsThisSlot });
+          usedRects = usedRects.concat(rects);
+          remaining[sku.id] -= cartonsThisSlot;
+          skusOnLayer++;
+        } else {
+          // Secondary/tertiary: fit into free space
+          const freeRects = getFreeRects(usedRects);
+          let bestFit = null;
+          let bestGap = null;
+          freeRects.forEach(gap => {
+            const fit = fitInGap(sku, gap);
+            if (fit && (!bestFit || fit.score > bestFit.score)) {
+              bestFit = fit;
+              bestGap = gap;
+            }
+          });
+          if (bestFit && bestFit.rects.length > 0) {
+            const cartonsThisSlot = Math.min(remaining[sku.id], bestFit.rects.length);
+            const rects = bestFit.rects.slice(0, cartonsThisSlot);
+            layerSlots.push({ sku, pattern, rects, cartonsThisSlot });
+            usedRects = usedRects.concat(rects);
+            remaining[sku.id] -= cartonsThisSlot;
+            skusOnLayer++;
+          }
+        }
+      }
+
+      if (!layerSlots.length) break; // safety
+
+      const layerH = Math.max(...layerSlots.map(s => s.sku.H));
+      layers.push({ slots: layerSlots, layerH });
+    }
+
+    return layers;
   }
 
-  function getRectsForLayer(entry) {
-    if (!entry.pattern) return [];
-    return entry.pattern.rects.slice(0, entry.cartonsThisLayer);
+  function getRectsForLayer(layer) {
+    // Returns array of {rect, sku} for all slots in the layer
+    const out = [];
+    layer.slots.forEach(slot => {
+      slot.rects.forEach(r => out.push({ rect:r, sku:slot.sku }));
+    });
+    return out;
   }
 
   // CALCULATE
@@ -170,21 +281,31 @@
     let effectiveL=PL, effectiveW=PW;
     const overhangItems = [];
 
+    // Weight/fraction/carton counts per SKU
     SKU_DATA.forEach(sku => {
       const qty = qtys[sku.id] || 0;
       if (!qty) return;
-      const all = generatePatterns(sku);
-      const pattern = all.find(p => p.id === selectedPatterns[sku.id]) || all[0];
-      const cpl = pattern ? pattern.cpl : 1;
       totalFraction += qty / sku.cpp;
       cargoWeight   += qty * sku.weight;
       totalCartons  += qty;
-      maxStackH += Math.ceil(qty/cpl) * sku.H;
-      if (pattern) {
-        effectiveL = Math.max(effectiveL, PL + pattern.ohL);
-        effectiveW = Math.max(effectiveW, PW + pattern.ohW);
-        if (pattern.ohL > 0 || pattern.ohW > 0) overhangItems.push({ sku, pattern });
-      }
+    });
+
+    // Build actual mixed layers to get real stack height and footprint
+    const builtLayers = buildLayers(qtys, selectedPatterns);
+    builtLayers.forEach(layer => {
+      maxStackH += layer.layerH;
+      layer.slots.forEach(slot => {
+        slot.rects.forEach(r => {
+          const ohL = Math.max(0, r.x + r.w - PL);
+          const ohW = Math.max(0, r.y + r.h - PW);
+          effectiveL = Math.max(effectiveL, PL + ohL);
+          effectiveW = Math.max(effectiveW, PW + ohW);
+        });
+        if (slot.pattern && (slot.pattern.ohL > 0 || slot.pattern.ohW > 0)) {
+          const already = overhangItems.find(o => o.sku.id === slot.sku.id);
+          if (!already) overhangItems.push({ sku:slot.sku, pattern:slot.pattern });
+        }
+      });
     });
 
     const pallets     = Math.ceil(totalFraction);
@@ -222,11 +343,7 @@
       w.push({ level:"info", msg:oi.sku.item + " " + oi.sku.size + " (" + oi.pattern.label + "): overhangs " + parts.join(" / ") });
     });
 
-    const maxLayersBySku = {};
-    layers.forEach(function(l) {
-      maxLayersBySku[l.sku.id] = (maxLayersBySku[l.sku.id] || 0) + 1;
-    });
-    const maxL = Math.max(...Object.values(maxLayersBySku), 0);
+    const maxL = layers.length;
     if (maxL > CONSTRAINTS.MAX_LAYERS)
       w.push({ level:"warn", msg:"Stack exceeds " + CONSTRAINTS.MAX_LAYERS + " layers. Consider splitting for stability." });
 
@@ -336,26 +453,27 @@
     curY += palletType.height;
 
     layers.forEach((l, i) => {
-      const lh = l.sku.H * scY;
-      const ac = ACCENT[l.sku.item];
+      const lh = l.layerH * scY;
+      const domAc = ACCENT[l.slots[0].sku.item];
       const isActive = i === Math.min(activeLayer, layers.length - 1);
+      const skuLabel = l.slots.map(s => s.sku.size).join("+");
       items.push(
         <div key={i} onClick={() => onLayerClick(i)} style={{
           position:"absolute", bottom:curY*scY, left:0, width:pxW, height:lh,
-          background: isActive ? ac.light : ac.primary + "18",
-          border:"1.5px solid " + (isActive ? ac.primary : ac.primary + "66"),
+          background: isActive ? domAc.light : domAc.primary + "18",
+          border:"1.5px solid " + (isActive ? domAc.primary : domAc.primary + "66"),
           cursor:"pointer", borderRadius:1,
           display:"flex", alignItems:"center", justifyContent:"center", transition:"background 0.15s",
         }}>
-          <span style={{ fontSize:7, color:ac.primary, fontWeight:isActive ? 700 : 500 }}>L{i+1} {l.sku.H}"</span>
+          <span style={{ fontSize:7, color:domAc.primary, fontWeight:isActive ? 700 : 500 }}>L{i+1} {l.layerH}" {skuLabel}</span>
         </div>
       );
       items.push(
-        <div key={"t"+i} style={{ position:"absolute", bottom:(curY+l.sku.H)*scY-7, left:pxW+4, fontSize:8, color:isActive ? ac.primary : "#8fa0bc" }}>
-          {parseFloat((curY + l.sku.H + palletType.height).toFixed(1))}"
+        <div key={"t"+i} style={{ position:"absolute", bottom:(curY+l.layerH)*scY-7, left:pxW+4, fontSize:8, color:isActive ? domAc.primary : "#8fa0bc" }}>
+          {parseFloat((curY + l.layerH + palletType.height).toFixed(1))}"
         </div>
       );
-      curY += l.sku.H;
+      curY += l.layerH;
     });
 
     items.push(<div key="gnd" style={{ position:"absolute", bottom:0, left:0, width:pxW+36, height:2, background:"#d0d8ec" }} />);
@@ -402,7 +520,8 @@
     const cl = Math.min(activeLayer, layers.length - 1);
     const layer = layers[cl];
     const rects = getRectsForLayer(layer);
-    const sku = layer.sku;
+    // For legend/label purposes use dominant (first) slot's SKU
+    const sku = layer.slots[0].sku;
     const ac = ACCENT[sku.item];
 
     const CW = 320, CH = 250;
@@ -419,8 +538,11 @@
           <div style={{ fontSize:10, fontWeight:600, color:"#8fa0bc", letterSpacing:"0.12em", marginBottom:8 }}>LAYERS</div>
           <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
             {layers.map((l, i) => {
-              const lac = ACCENT[l.sku.item];
               const isActive = i === cl;
+              // Mixed layer: show color of dominant (first) SKU, list all sizes
+              const domSlot = l.slots[0];
+              const lac = ACCENT[domSlot.sku.item];
+              const label = l.slots.map(s => s.sku.size).join(" + ");
               return (
                 <button key={i} onClick={() => onLayerClick(i)} style={{
                   padding:"4px 10px", borderRadius:20, fontSize:10, fontFamily:"inherit",
@@ -430,7 +552,7 @@
                   transition:"all 0.15s",
                   boxShadow: isActive ? "0 2px 8px " + lac.primary + "50" : "none",
                 }}>
-                  L{i+1} {l.sku.size}
+                  L{i+1} {label}
                 </button>
               );
             })}
@@ -439,8 +561,8 @@
 
         <div>
           <div style={{ fontSize:10, fontWeight:600, color:"#8fa0bc", letterSpacing:"0.12em", marginBottom:8 }}>
-            TOP-DOWN - LAYER {cl+1} - {sku.item} {sku.size}
-            {layer.pattern && <span style={{ fontWeight:400, color:"#a0aec0" }}> ({layer.pattern.label})</span>}
+            TOP-DOWN - LAYER {cl+1}
+            <span style={{ fontWeight:400, color:"#a0aec0" }}> - {layer.slots.map(s => s.sku.size + " (" + s.cartonsThisSlot + " ctns)").join(" + ")}</span>
           </div>
           <div style={{ position:"relative", width:CW, height:CH }}>
             {res.hasOverhang && (
@@ -450,19 +572,21 @@
               {[0.33, 0.66].map(p => <div key={p} style={{ position:"absolute", left:0, right:0, top:(p*100)+"%", height:1, background:"#e4e8f4" }} />)}
               {[0.33, 0.66].map(p => <div key={p} style={{ position:"absolute", top:0, bottom:0, left:(p*100)+"%", width:1, background:"#e4e8f4" }} />)}
             </div>
-            {rects.map((r, i) => {
+            {rects.map((entry, i) => {
+              const r = entry.rect, rsku = entry.sku;
+              const rac = ACCENT[rsku.item];
               const px = ox + r.x*scale, py = oy + r.y*scale;
               const rw = r.w*scale, rh = r.h*scale;
               const oh = (r.x + r.w > PL) || (r.y + r.h > PW);
               return (
                 <div key={i} style={{
                   position:"absolute", left:px, top:py, width:rw, height:rh,
-                  background: oh ? "#fff3cd" : r.tucked ? ac.primary + "22" : ac.light,
-                  border:"2px " + (r.tucked ? "dashed" : "solid") + " " + (oh ? "#f5a623" : ac.primary),
+                  background: oh ? "#fff3cd" : r.tucked ? rac.primary + "22" : rac.light,
+                  border:"2px " + (r.tucked ? "dashed" : "solid") + " " + (oh ? "#f5a623" : rac.primary),
                   borderRadius:2, display:"flex", flexDirection:"column",
                   alignItems:"center", justifyContent:"center", gap:1,
                   fontSize:Math.max(7, Math.min(10, scale*1.8)),
-                  color: oh ? "#d4820a" : ac.primary, fontWeight:600, overflow:"hidden",
+                  color: oh ? "#d4820a" : rac.primary, fontWeight:600, overflow:"hidden",
                 }}>
                   {rw > 20 && rh > 12 ? (r.w + "x" + r.h + '"') : ""}
                   {r.tucked && rw > 22 && rh > 20 ? <span style={{ fontSize:Math.max(6, scale*1.2), opacity:0.6 }}>TUCKED</span> : ""}
@@ -476,7 +600,7 @@
             {res.effectiveL > PL && <div style={{ position:"absolute", left:ox+pW, top:oy+pH+5, fontSize:9, color:"#f5a623", fontWeight:600 }}>+{(res.effectiveL-PL).toFixed(1)}"</div>}
             {res.effectiveW > PW && <div style={{ position:"absolute", left:ox, top:oy+pH+16, fontSize:9, color:"#f5a623", fontWeight:600 }}>+{(res.effectiveW-PW).toFixed(1)}" W</div>}
           </div>
-          {sku.item === "Vinyl Q-Top" && layer.pattern && layer.pattern.rects.some(r => r.tucked) && (
+          {layer.slots.some(s => s.sku.item === "Vinyl Q-Top" && s.rects.some(r => r.tucked)) && (
             <div style={{ marginTop:7, display:"flex", gap:12 }}>
               <div style={{ display:"flex", alignItems:"center", gap:5 }}>
                 <div style={{ width:12, height:9, background:ac.light, border:"1.5px solid " + ac.primary, borderRadius:1 }} />
